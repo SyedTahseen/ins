@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from datetime import timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -20,11 +21,11 @@ from telegram.error import BadRequest, TelegramError
 from core.auth import describe_error
 from modules.base import BaseModule
 from utils.logger import get_logger
-from utils.tgsend import send_one, set_reaction
+from utils.tgsend import DONE_REACTION, FAILED_REACTIONS, clip, esc, send_one, set_reaction
 
 TELEGRAM_MAX_BYTES = 50 * 1024 * 1024
-# Shown on the user's message while a link is being downloaded; the first one Telegram allows is used.
-WORKING_REACTIONS = ("🕓", "👀")
+CAPTION_TZ = timezone.utc          # time zone of the date shown in the caption
+CAPTION_LIMIT = 1024               # Telegram's caption limit
 AUDIO_EXTENSIONS = (".m4a", ".mp3", ".aac", ".ogg", ".wav")
 
 log = get_logger("autodl")
@@ -37,6 +38,56 @@ _RESERVED = {
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 _TRAILING_PUNCTUATION = ".,!?;:)]}>"
 _LINK_RE = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/\S+", re.I)
+
+
+def short_num(value) -> str | None:
+    """113700 -> '113.7K', 1250000 -> '1.2M'. None when Instagram hides the number."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    if n < 0:
+        return None
+    if n < 1000:
+        return str(n)
+    if round(n / 1000, 1) < 1000:
+        return f"{n / 1000:.1f}".rstrip("0").rstrip(".") + "K"
+    return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+
+
+def build_caption(kind: str, url: str, size_bytes: int, meta: dict | None) -> str:
+    """HTML caption: title, the post's own caption text, likes / comments / author / date, link and size.
+    Always fits Telegram's 1024-character caption limit (the caption text is what gets shortened)."""
+    meta = meta or {}
+    stats = []
+    likes, comments = short_num(meta.get("likes")), short_num(meta.get("comments"))
+    if likes is not None:
+        stats.append(f"❤️ {likes}")
+    if comments is not None:
+        stats.append(f"💬 {comments}")
+    if meta.get("author"):
+        stats.append(f"👤 {esc(meta['author'])}")
+    taken = meta.get("date")
+    if taken is not None:
+        try:
+            stats.append("📅 " + taken.astimezone(CAPTION_TZ).strftime("%Y/%m/%d %H:%M:%S"))
+        except (AttributeError, ValueError, OSError):
+            pass
+    head = f"📥 <b>Instagram {esc(kind.title())}</b>"
+    tail = f'<a href="{html.escape(url, quote=True)}">Open on Instagram</a>\nSize: {fmt_size(size_bytes)}'
+    text = (meta.get("caption") or "").strip()
+    limit = 800
+    while True:
+        parts = [head]
+        if text:
+            parts.append(esc(clip(text, limit)))
+        if stats:
+            parts.append("\n".join(stats))
+        parts.append(tail)
+        caption = "\n\n".join(parts)
+        if len(caption) <= CAPTION_LIMIT or limit <= 50:
+            return caption
+        limit -= 100
 
 
 def fmt_size(num_bytes: int) -> str:
@@ -276,6 +327,26 @@ class AutoDownloadModule(BaseModule):
             "The audio may be licensed, restricted, or unavailable for download."
         )
 
+    @staticmethod
+    def _meta(media) -> dict:
+        """What the caption shows: text, likes, comments, author, date."""
+        return {
+            "caption": _value(media, "caption_text") or "",
+            "likes": _value(media, "like_count"),
+            "comments": _value(media, "comment_count"),
+            "author": _nested(media, "user", "username"),
+            "date": _value(media, "taken_at"),
+        }
+
+    @staticmethod
+    def _clip(cl, media, pk: str, folder: Path):
+        """Download a Reel from the media info we already have (saves instagrapi a second lookup)."""
+        video_url = _value(media, "video_url")
+        by_url = getattr(cl, "clip_download_by_url", None)
+        if video_url and by_url:
+            return by_url(str(video_url), filename=str(pk), folder=folder)
+        return cl.clip_download(pk, folder=folder)
+
     def _download_sync(self, url: str, category: str, folder: Path) -> dict:
         """A link you pasted is a one-off request, so skip the random pause instagrapi adds after every call
         (meant for bulk scraping). It is only a few calls, not a loop."""
@@ -292,8 +363,9 @@ class AutoDownloadModule(BaseModule):
         cl = self.ctx.ig.cl
         if category == "reel":
             pk = str(cl.media_pk_from_url(url))
-            result = cl.clip_download(pk, folder=folder)
-            return {"paths": self._paths(result, folder), "pk": pk, "is_reel": True, "kind": "reel"}
+            media = cl.media_info(pk)
+            result = self._clip(cl, media, pk, folder)
+            return {"paths": self._paths(result, folder), "pk": pk, "is_reel": True, "kind": "reel", "meta": self._meta(media)}
 
         if category == "post":
             pk = str(cl.media_pk_from_url(url))
@@ -308,7 +380,7 @@ class AutoDownloadModule(BaseModule):
                 result = cl.photo_download(pk, folder=folder)
                 label = "photo"
             elif media_type == 2 and is_reel:
-                result = cl.clip_download(pk, folder=folder)
+                result = self._clip(cl, media, pk, folder)
                 label = "reel"
             elif media_type == 2 and product_type == "igtv":
                 result = cl.igtv_download(pk, folder=folder)
@@ -318,7 +390,7 @@ class AutoDownloadModule(BaseModule):
                 label = "video"
             else:
                 raise RuntimeError(f"Unsupported Instagram media type: {media_type}.")
-            return {"paths": self._paths(result, folder), "pk": pk, "is_reel": is_reel, "kind": label}
+            return {"paths": self._paths(result, folder), "pk": pk, "is_reel": is_reel, "kind": label, "meta": self._meta(media)}
 
         if category == "story":
             story_pk = str(cl.story_pk_from_url(url))
@@ -422,7 +494,7 @@ class AutoDownloadModule(BaseModule):
             await message.reply_text("Another download is still running in this chat. Please wait.")
             return
         self._busy.add(chat_id)
-        await set_reaction(bot, message, *WORKING_REACTIONS)  # "working on it" shows on the user's own message
+        ok = False
         try:
             with tempfile.TemporaryDirectory(prefix="hyperig-dl-") as temp:
                 folder = Path(temp)
@@ -431,11 +503,7 @@ class AutoDownloadModule(BaseModule):
                 if not paths:
                     raise RuntimeError("Instagram returned no downloadable media files.")
                 total = sum(p.stat().st_size for p in paths)
-                caption = (
-                    f"📥 <b>Instagram {html.escape(result['kind'].title())}</b>\n"
-                    f"<a href=\"{html.escape(url, quote=True)}\">Open on Instagram</a>\n"
-                    f"Size: {fmt_size(total)}"
-                )
+                caption = build_caption(result["kind"], url, total, result.get("meta"))
                 markup = None
                 if result["is_reel"] and len(paths) == 1 and self.ctx.prefs.get("dl_audio", True):
                     # One message: the Reel itself carries the audio button.
@@ -443,12 +511,13 @@ class AutoDownloadModule(BaseModule):
                         [[InlineKeyboardButton("Download original audio", callback_data=f"m:autodl:a:{result['pk']}")]]
                     )
                 await self._send_paths(bot, chat_id, paths, caption, markup=markup)
+            ok = True
         except Exception as e:
             log.info("Instagram link download failed (%s)", type(e).__name__)
             await message.reply_text(self._explain(e))
         finally:
             self._busy.discard(chat_id)
-            await set_reaction(bot, message)  # done (or failed, with a reply): take the reaction off again
+            await set_reaction(bot, message, *([DONE_REACTION] if ok else FAILED_REACTIONS))
 
     @staticmethod
     def _has_video_track(path: Path) -> bool:

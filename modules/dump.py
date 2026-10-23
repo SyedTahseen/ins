@@ -25,7 +25,7 @@ from modules.base import BaseModule, Command
 from utils import media as media_utils
 from utils.logger import get_logger
 from utils.progress import Progress
-from utils.tgsend import caption_of, clip as _clip, esc as _esc, items_of, num as _num, send_items, send_one, set_reaction
+from utils.tgsend import caption_of, clip as _clip, esc as _esc, items_of, num as _num, send_items, send_one, set_reaction, DONE_REACTION, FAILED_REACTIONS
 
 log = get_logger("dump")
 
@@ -38,7 +38,6 @@ REELS_DEFAULT, REELS_MAX = 3, 30
 LIST_DEFAULT, LIST_MAX = 200, 2000   # followers / following list size
 HIGHLIGHT_BUTTONS = 20
 PREFIX = "dump"
-WORKING_REACTIONS = ("🕓", "👀")
 # Everyday one-word messages that look like a username but are not meant as one.
 NOT_USERNAMES = {
     "hi", "hii", "hello", "hey", "yo", "thanks", "thank", "thx", "ty", "ok", "okay", "yes", "no", "yep", "nope",
@@ -369,13 +368,14 @@ class DumpModule(BaseModule):
             await update.effective_message.reply_text(f"Usage: {usage}\n(a username, @username or instagram.com link)")
         return username
 
-    async def _card_message(self, update, username: str, detailed: bool, with_menu: bool) -> None:
+    async def _card_message(self, update, username: str, detailed: bool, with_menu: bool) -> bool:
+        """Send the profile card. True if it was sent, False if an error message was sent instead."""
         message = update.effective_message
         try:
             user = await self._profile(username)
         except Exception as e:
             await message.reply_text(self._explain(e))
-            return
+            return False
         text = self._card(user, detailed)
         markup = self._menu(username, bool(user.is_private)) if with_menu else None
         pic = str(user.profile_pic_url_hd or user.profile_pic_url or "")
@@ -383,10 +383,11 @@ class DumpModule(BaseModule):
         if data:
             try:
                 await message.reply_photo(photo=data, caption=text, parse_mode="HTML", reply_markup=markup)
-                return
+                return True
             except BadRequest as e:
                 log.info("Card photo refused (%s), sending text", e)
         await message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        return True
 
     async def cmd_profile(self, args, update):
         username = await self._target(args, update, "/profile <username or link>")
@@ -512,12 +513,11 @@ class DumpModule(BaseModule):
             name = await self._username_in(text)
             if not name:
                 return False
-            bot = update.get_bot()
-            await set_reaction(bot, message, *WORKING_REACTIONS)
+            sent = False
             try:
-                await self._card_message(update, name, detailed=True, with_menu=True)
+                sent = await self._card_message(update, name, detailed=True, with_menu=True)
             finally:
-                await set_reaction(bot, message)
+                await set_reaction(update.get_bot(), message, *([DONE_REACTION] if sent else FAILED_REACTIONS))
             return True
         kind, username = wanted
         word = text.strip().lower()
