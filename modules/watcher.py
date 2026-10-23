@@ -586,27 +586,43 @@ class WatcherModule(BaseModule):
     def is_awaiting(self, chat_id: int) -> bool:
         return chat_id in self._awaiting
 
+    async def _edit(self, bot, chat_id: int, message_id: int, text: str, markup=None) -> None:
+        try:
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode="HTML",
+                                        reply_markup=markup, disable_web_page_preview=True)
+        except TelegramError:
+            pass  # unchanged text, or the message is gone
+
     async def on_text(self, text: str, update) -> bool:
         message = update.effective_message
         chat_id = message.chat_id
         wanted = self._awaiting.pop(chat_id, None)
         if not wanted:
             return False
-        what, username = wanted
-        if text.strip().lower() in ("cancel", "stop"):
-            await message.reply_text("Cancelled.")
+        what, prompt_id = wanted   # prompt_id: the message that asked for the username (edited in place)
+        bot = update.get_bot()
+        back = InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"m:{PREFIX}:ls:-")]])
+        cancel = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"m:{PREFIX}:ls:-")]])
+        if what != "add":
             return True
-        if what == "add":
-            target = parse_target(text.split()[0] if text.split() else "")
-            if not target:
-                self._awaiting[chat_id] = wanted
-                await message.reply_text("That isn't a username. Send one like nasa or @nasa (or “cancel”).")
-                return True
-            ok, reply = await self.add_account(target, set(DEFAULT_FLAGS))
-            await message.reply_text(reply, parse_mode="HTML")
-            if ok:
-                view, markup = self._account_view(target)
-                await message.reply_text(view, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        try:
+            await message.delete()   # keep the chat clean: the typed username is not needed any more
+        except TelegramError:
+            pass
+        if text.strip().lower() in ("cancel", "stop"):
+            await self._edit(bot, chat_id, int(prompt_id), *self.list_view())
+            return True
+        target = parse_target(text.split()[0] if text.split() else "")
+        if not target:
+            self._awaiting[chat_id] = wanted
+            await self._edit(bot, chat_id, int(prompt_id),
+                             "That isn't a username. Send one like nasa or @nasa.", cancel)
+            return True
+        await self._edit(bot, chat_id, int(prompt_id),
+                         f"⏳ Adding <b>@{esc(target)}</b>…\nChecking the account and recording what is already there. "
+                         "This can take up to a minute.")
+        ok, reply = await self.add_account(target, set(DEFAULT_FLAGS))
+        await self._edit(bot, chat_id, int(prompt_id), reply, back)
         return True
 
     # ------------------------------------------------------------------ screens
@@ -678,14 +694,19 @@ class WatcherModule(BaseModule):
         act, _, arg = rest.partition(":")
         message = query.message
         if act == "ls":
+            self._awaiting.pop(message.chat_id, None)   # also the Cancel button of the add prompt
             await self._show(query, *self.list_view())
             return
         if act == "add":
             other = self.ctx.modules.get("dump") if self.ctx.modules else None
             if other is not None:
                 other._awaiting.pop(message.chat_id, None)   # drop any half-finished question from the profile menu
-            self._awaiting[message.chat_id] = ("add", "")
-            await message.reply_text("Send the username to watch (like nasa or @nasa), or send cancel.\nIt will watch everything; switch features off afterwards from the account's menu.")
+            self._awaiting[message.chat_id] = ("add", str(message.message_id))
+            await self._show(
+                query, "➕ <b>Add account</b>\n\nSend the username to watch (like nasa or @nasa).\n"
+                "It will be watched for everything; switch features off afterwards from the account's menu.",
+                InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"m:{PREFIX}:ls:-")]]),
+            )
             return
         if act == "now":
             ok, text = self.request_check_now()
