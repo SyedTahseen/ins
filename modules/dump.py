@@ -505,6 +505,9 @@ class DumpModule(BaseModule):
             await self._run(bot, chat_id, act, username)
 
     # ------------------------------------------------------------------ typed number
+    def is_awaiting(self, chat_id: int) -> bool:
+        return chat_id in self._awaiting
+
     async def on_text(self, text: str, update) -> bool:
         message = update.effective_message
         wanted = self._awaiting.pop(message.chat_id, None)

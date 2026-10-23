@@ -40,6 +40,10 @@ class BaseModule:
     async def on_stop(self) -> None:
         """Called on shutdown (cancel background tasks here)."""
 
+    def is_awaiting(self, chat_id: int) -> bool:
+        """True while this module has asked the user to type something (it then gets the next message first)."""
+        return False
+
     async def on_text(self, text: str, update) -> bool:
         """A plain (non-command) message in the private chat. Return True if this module used it
         (for example, the username it asked you to type). Called before pasted links are looked at."""

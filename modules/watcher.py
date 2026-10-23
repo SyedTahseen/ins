@@ -1,8 +1,6 @@
 """Watch public Instagram accounts and get what changes, in Telegram.
 
 Commands
-  /watch <user> [posts] [stories] [profile] [highlights] [edits] [engagement] [all|everything]
-  /unwatch <user>
   /watchlist            the management screen (also: Settings -> Watchlist)
 
 What it can watch, per account (all switchable on the account's screen):
@@ -11,7 +9,7 @@ What it can watch, per account (all switchable on the account's screen):
   highlights       new highlights, and items added to existing ones
   edits & removals caption edits; posts that disappeared (deleted or archived)
   milestones       likes/comments crossing round numbers on recent posts; follower milestones
-Per account: pause, or switch each of the above on and off (Everything turns all on).
+Per account: pause, or switch each of the above on and off.
 
 This only sees what Instagram shows publicly about public accounts. Who someone follows, what they like or
 comment on elsewhere, DMs and activity times are not exposed and are not tracked.
@@ -76,7 +74,7 @@ WORDS = {
     "posts": "p", "reels": "p", "stories": "s", "profile": "pr", "highlights": "hl",
     "edits": "ed", "engagement": "en", "milestones": "en",
 }
-DEFAULT_FLAGS = {"p", "s"}
+DEFAULT_FLAGS = set(FLAGS)   # new accounts watch everything; switch features off per account
 # state that starts as None and is recorded silently the first time its feature is on
 BASELINES = {"posts": "seen_posts", "stories": "seen_stories", "profile": "snap", "highlights": "hl", "edits": "tracked", "engagement": "tracked"}
 
@@ -136,7 +134,7 @@ def _ago(ts: float) -> str:
 class WatcherModule(BaseModule):
     name = "watcher"
     toggleable = True
-    label = "Watcher (/watch, new posts and stories)"
+    label = "Watcher (/watchlist, new posts, stories and changes)"
     description = "Get new posts, reels, stories and changes of public accounts"
 
     def __init__(self, ctx):
@@ -157,11 +155,6 @@ class WatcherModule(BaseModule):
     # ------------------------------------------------------------------ registration
     def get_commands(self):
         return {
-            "watch": Command(
-                self.cmd_watch, "Watch a public account for new posts, stories and changes",
-                "/watch <username> [posts] [stories] [profile] [highlights] [edits] [engagement] [everything]", takes_update=True,
-            ),
-            "unwatch": Command(self.cmd_unwatch, "Stop watching an account", "/unwatch <username>", takes_update=True),
             "watchlist": Command(self.cmd_watchlist, "Manage watched accounts", "/watchlist", takes_update=True),
         }
 
@@ -585,44 +578,14 @@ class WatcherModule(BaseModule):
         }
 
     # ------------------------------------------------------------------ commands
-    async def cmd_watch(self, args, update):
-        message = update.effective_message
-        username = parse_target(args[0]) if args else None
-        if not username:
-            await message.reply_text(
-                "Usage: /watch <username> [posts] [stories] [profile] [highlights] [edits] [engagement] [everything]\n"
-                "No options = posts + stories. “all” = posts + stories, “everything” = all six.\n"
-                "Or open /watchlist and tap ➕ Add account."
-            )
-            return
-        flags: set[str] = set()
-        for word in (a.lower() for a in args[1:]):
-            if word == "all":
-                flags |= DEFAULT_FLAGS
-            elif word == "everything":
-                flags |= set(FLAGS)
-            elif word in WORDS:
-                flags.add(WORDS[word])
-            else:
-                await message.reply_text(f"Unknown option “{word}”. Options: " + ", ".join(sorted(set(WORDS) | {"all", "everything"})))
-                return
-        ok, text = await self.add_account(username, flags or set(DEFAULT_FLAGS))
-        await message.reply_text(text, parse_mode="HTML")
-
-    async def cmd_unwatch(self, args, update):
-        message = update.effective_message
-        username = parse_target(args[0]) if args else None
-        if not username:
-            await message.reply_text("Usage: /unwatch <username>")
-            return
-        removed = await self.remove_account(username)
-        await message.reply_text(f"Stopped watching @{username}." if removed else f"@{username} is not on your watchlist.")
-
     async def cmd_watchlist(self, args, update):
         text, markup = self.list_view()
         await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
     # ------------------------------------------------------------------ typing flow (add account)
+    def is_awaiting(self, chat_id: int) -> bool:
+        return chat_id in self._awaiting
+
     async def on_text(self, text: str, update) -> bool:
         message = update.effective_message
         chat_id = message.chat_id
@@ -661,7 +624,7 @@ class WatcherModule(BaseModule):
         if notice:
             lines = [notice, ""] + lines
         if not self._watch:
-            lines.append("No accounts yet. Tap Add account, or send /watch username.")
+            lines.append("No accounts yet. Tap Add account and send a username.")
         else:
             lines.append("Tap an account to choose what to watch on it.")
             lines.append("")
@@ -698,7 +661,6 @@ class WatcherModule(BaseModule):
             for code, (key, name, _short) in FLAGS.items()
         ]
         rows = self._row(toggles, 3)
-        rows.append([InlineKeyboardButton("Everything", callback_data=f"m:{PREFIX}:ev:{username}")])
         rows.append([
             InlineKeyboardButton("Resume" if entry["paused"] else "Pause", callback_data=f"m:{PREFIX}:pz:{username}"),
             InlineKeyboardButton("Remove", callback_data=f"m:{PREFIX}:rm:{username}"),
@@ -719,8 +681,11 @@ class WatcherModule(BaseModule):
             await self._show(query, *self.list_view())
             return
         if act == "add":
+            other = self.ctx.modules.get("dump") if self.ctx.modules else None
+            if other is not None:
+                other._awaiting.pop(message.chat_id, None)   # drop any half-finished question from the profile menu
             self._awaiting[message.chat_id] = ("add", "")
-            await message.reply_text("Send the username to watch (like nasa or @nasa), or send cancel.")
+            await message.reply_text("Send the username to watch (like nasa or @nasa), or send cancel.\nIt will watch everything; switch features off afterwards from the account's menu.")
             return
         if act == "now":
             ok, text = self.request_check_now()
@@ -742,14 +707,6 @@ class WatcherModule(BaseModule):
         username = arg
         entry = self._watch.get(username)
         if act == "ac":
-            await self._show(query, *self._account_view(username))
-        elif act == "ev" and entry:
-            for code, (key, _name, _short) in FLAGS.items():
-                if not entry[key]:
-                    entry[key] = True
-                    entry[BASELINES[key]] = None   # starts from now, silently
-            async with self._lock:
-                await self._save()
             await self._show(query, *self._account_view(username))
         elif act == "pz" and entry:
             await self.update_entry(username, paused=not entry["paused"])

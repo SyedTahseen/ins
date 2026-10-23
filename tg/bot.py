@@ -98,7 +98,6 @@ class FetchIGBot:
         await app.bot.set_my_commands([
             BotCommand("start", "Start Fetch IG "),
             BotCommand("status", "Status"),
-            BotCommand("watch", "Watch an account"),
             BotCommand("watchlist", "Manage watched accounts"),
             BotCommand("settings", "Settings"),
             BotCommand("help", "All commands"),

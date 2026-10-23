@@ -57,7 +57,11 @@ class ModuleManager:
 
     async def handle_text(self, text: str, update) -> bool:
         """Offer a plain private-chat message to every enabled module; the first one that uses it wins."""
-        for module in self.modules:
+        chat_id = getattr(getattr(update, "effective_message", None), "chat_id", None)
+        # A module that just asked a question (e.g. "send the username to watch") must get the answer
+        # before the link / profile openers, otherwise a bare username is taken as a profile lookup.
+        ordered = sorted(self.modules, key=lambda m: 0 if chat_id is not None and m.is_awaiting(chat_id) else 1)
+        for module in ordered:
             if not self.is_enabled(module):
                 continue
             try:
