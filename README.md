@@ -3,6 +3,7 @@
 A Telegram bot for Instagram. Every user connects their own Instagram account inside the bot, then can:
 
 - paste an Instagram link (reel, post, story, highlight) and get the media; Reels carry a button for their original audio (needs `ffmpeg` installed for a clean .m4a)
+- `/posts`, `/reels`, `/stories` and highlights use the same caption as pasted links. Fewer than 10 items are sent normally; 10 or more ask whether to send one by one or as a ZIP (split into parts if over the 50 MB Telegram limit)
 - send a username (`x.tahseen`, `@x.tahseen` or an `instagram.com/x.tahseen` link) to open a public profile: posts, reels, stories, highlights, profile picture, JSON, followers and following exports
 - watch public accounts from the Watchlist (`/watchlist`): new posts, stories, highlights, profile changes, edits and milestones are sent to the chat
 - check `/status`, change `/settings`, and delete everything with `/logout`

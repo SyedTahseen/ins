@@ -3,6 +3,10 @@ import io
 import json
 import random
 import re
+import tempfile
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
@@ -13,8 +17,10 @@ from modules.base import BaseModule, Command
 from utils import media as media_utils
 from utils.logger import get_logger
 from utils.progress import Progress
-from utils.tgsend import caption_of, clip as _clip, esc as _esc, items_of, num as _num, send_items, send_one, set_reaction, DONE_REACTION
+from utils.caption import build_caption, build_zip_caption, info_entry, label_of, link_of, meta_of, slug
+from utils.tgsend import clip as _clip, esc as _esc, fetch_items, items_of, num as _num, send_files, send_one, set_reaction, tg_call, DONE_REACTION
 from utils.ui import BUSY, NOT_CONNECTED, bad, screen
+from utils.zipper import ZipParts
 
 log = get_logger("dump")
 
@@ -26,11 +32,24 @@ POSTS_DEFAULT, POSTS_MAX = 5, 50
 REELS_DEFAULT, REELS_MAX = 3, 30
 LIST_DEFAULT, LIST_MAX = 200, 2000
 HIGHLIGHT_BUTTONS = 20
+ZIP_THRESHOLD = 10  # fewer than this many items are sent normally; this many or more ask "ZIP or one by one?"
+PENDING_TTL = 30 * 60
 PREFIX = "dump"
 NOT_USERNAMES = {
     "hi", "hii", "hello", "hey", "yo", "thanks", "thank", "thx", "ty", "ok", "okay", "yes", "no", "yep", "nope",
     "test", "start", "help", "stop", "cancel", "bye", "lol", "wow", "nice", "good", "cool", "done", "sure",
 }
+
+
+@dataclass
+class Batch:
+    medias: list
+    kind: str  # post | reel | story | highlight
+    username: str
+    title: str = ""  # highlight title
+    url: str = ""  # highlight link
+    date: object = None  # highlight date
+    made: float = field(default_factory=time.monotonic)
 
 
 def parse_target(raw: str) -> str | None:
@@ -58,6 +77,8 @@ class DumpModule(BaseModule):
         self._private: dict[str, bool] = {}
         self._awaiting: dict[int, tuple[str, str]] = {}
         self._fmt: dict[int, str] = {}
+        self._pending: dict[int, tuple[int, Batch]] = {}
+        self._seq = 0
 
     def get_commands(self):
         return {
@@ -201,11 +222,13 @@ class DumpModule(BaseModule):
         self._busy.add(chat_id)
         status = await Progress.begin(bot, chat_id, self.TITLES.get(act, "Working"), f"@{username}", "Reading profile")
         try:
-            sent, total = await self._job(bot, chat_id, status, act, username, n, hl_pk)
-            if total:
-                await status.done(f"Sent {sent} of {total} from @{username}" + ("" if sent == total else " (some files could not be downloaded)"))
-            else:
-                await status.done(f"@{username}")
+            outcome = await self._job(bot, chat_id, status, act, username, n, hl_pk)
+            if isinstance(outcome, Batch):
+                if len(outcome.medias) >= ZIP_THRESHOLD:
+                    await self._offer_zip(chat_id, status, outcome)
+                    return
+                outcome = await self._send_many(bot, chat_id, status, outcome)
+            await self._finish(status, username, *outcome)
         except Exception as e:
             if not isinstance(e, (PermissionError, RuntimeError)):
                 log.warning("Dump %s for @%s failed: %s", act, username, e)
@@ -213,7 +236,14 @@ class DumpModule(BaseModule):
         finally:
             self._busy.discard(chat_id)
 
-    async def _job(self, bot, chat_id, status, act, username, n, hl_pk) -> tuple[int, int]:
+    @staticmethod
+    async def _finish(status, username: str, sent: int, total: int, how: str = "") -> None:
+        if total:
+            await status.done(f"Sent {sent} of {total} from @{username}{how}" + ("" if sent == total else " (some files could not be downloaded)"))
+        else:
+            await status.done(f"@{username}")
+
+    async def _job(self, bot, chat_id, status, act, username, n, hl_pk):
         if act == "pp":
             user = await self._profile(username)
             url = str(user.profile_pic_url_hd or user.profile_pic_url or "")
@@ -262,19 +292,21 @@ class DumpModule(BaseModule):
                 medias = await self._ig(lambda: self.ctx.ig.cl.user_clips(pk, n))
             if not medias:
                 raise RuntimeError("No posts found." if act == "p" else "No reels found.")
-            return await self._send_many(bot, chat_id, status, medias[:n], "post" if act == "p" else "reel")
+            return Batch(medias[:n], "post" if act == "p" else "reel", username)
 
         if act == "st":
             stories = await self._ig(lambda: self.ctx.ig.cl.user_stories(pk))
             if not stories:
                 raise RuntimeError("No active stories right now.")
-            return await self._send_many(bot, chat_id, status, stories, "story")
+            return Batch(list(stories), "story", username)
 
         if act == "h":
             hl = await self._ig(lambda: self.ctx.ig.cl.highlight_info(hl_pk))
             if not hl.items:
                 raise RuntimeError("That highlight is empty.")
-            return await self._send_many(bot, chat_id, status, hl.items, "story")
+            date = getattr(hl, "created_at", None) or getattr(hl.items[0], "taken_at", None)
+            return Batch(list(hl.items), "highlight", username, title=hl.title or "", date=date,
+                         url=f"https://www.instagram.com/stories/highlights/{hl_pk}/")
 
         raise RuntimeError("Unknown action.")
 
@@ -302,16 +334,145 @@ class DumpModule(BaseModule):
         )
         return 0, 0
 
-    async def _send_many(self, bot, chat_id, status, medias, kind: str) -> tuple[int, int]:
-        sent = 0
+    def _caption(self, batch: Batch, m, size: int, text: str | None = None, date=None) -> str:
+        label = label_of(m, batch.kind)
+        meta = meta_of(m, batch.username, text, date)
+        return build_caption(label, link_of(m, label, batch.username, batch.url), size, meta)
+
+    async def _files(self, m) -> list[tuple[str, bytes]]:
+        return await fetch_items(items_of(m), self._fetch)
+
+    async def _send_many(self, bot, chat_id, status, batch: Batch) -> tuple[int, int]:
+        if batch.kind == "highlight":
+            return await self._send_highlight(bot, chat_id, status, batch)
+        sent, medias = 0, batch.medias
         for i, m in enumerate(medias, 1):
             await status.set(f"Sending {i} of {len(medias)}", (i - 1) / len(medias))
-            items = items_of(m)
-            if items and await send_items(bot, chat_id, items, caption_of(m, kind), self._fetch):
+            files = await self._files(m)
+            if files:
+                await send_files(bot, chat_id, files, self._caption(batch, m, sum(len(d) for _, d in files)))
                 sent += 1
             if i != len(medias):
                 await asyncio.sleep(random.uniform(0.8, 1.8))
         return sent, len(medias)
+
+    async def _send_highlight(self, bot, chat_id, status, batch: Batch) -> tuple[int, int]:
+        """Same as a pasted highlight link: the stories go out together as albums, under one caption."""
+        items = batch.medias
+        sent = 0
+        for start in range(0, len(items), 10):
+            chunk = items[start : start + 10]
+            await status.set(f"Sending {start + 1}-{start + len(chunk)} of {len(items)}", start / len(items))
+            files: list[tuple[str, bytes]] = []
+            for story in chunk:
+                files += await self._files(story)
+            if files:
+                text = batch.title
+                if len(items) > 10:
+                    text = f"{text} ({start + 1}-{start + len(chunk)} of {len(items)})".strip()
+                caption = self._caption(batch, chunk[0], sum(len(d) for _, d in files), text=text, date=batch.date)
+                await send_files(bot, chat_id, files, caption)
+                sent += len(files)
+            if start + 10 < len(items):
+                await asyncio.sleep(random.uniform(0.8, 1.8))
+        return min(sent, len(items)), len(items)
+
+    # ---- "10 or more" choice: ZIP or one by one -------------------------------------------------
+
+    async def _offer_zip(self, chat_id: int, status, batch: Batch) -> None:
+        self._seq += 1
+        self._pending[chat_id] = (self._seq, batch)
+        count = len(batch.medias)
+        files = sum(len(items_of(m)) for m in batch.medias)
+        word = {"post": "posts", "reel": "reels", "story": "stories", "highlight": "highlight items"}[batch.kind]
+        mb = self.ctx.tg.max_bytes // 1_000_000
+        body = (f"{count} {word}, {files} files in total. That is a lot to send one by one.\n"
+                f"A ZIP is a single file (split into parts if it goes over {mb} MB).")
+        title = f"{count} {word} from @{batch.username}"
+        markup = InlineKeyboardMarkup([
+            [_btn("Send as ZIP", "pz", str(self._seq)), _btn("One by one", "ps", str(self._seq))],
+            [_btn("Cancel", "pc", str(self._seq))],
+        ])
+        try:
+            await status.message.edit_text(screen(title, _esc(body)), parse_mode="HTML", reply_markup=markup)
+        except TelegramError:
+            await status.message.reply_text(screen(title, _esc(body)), parse_mode="HTML", reply_markup=markup)
+
+    async def _on_choice(self, bot, query, act: str, token: str) -> None:
+        chat_id = query.message.chat_id
+        found = self._pending.get(chat_id)
+        if not found or str(found[0]) != token or time.monotonic() - found[1].made > PENDING_TTL:
+            self._pending.pop(chat_id, None)
+            await self._edit(query.message, bad("This choice expired. Run the command again."))
+            return
+        batch = found[1]
+        if act == "pc":
+            self._pending.pop(chat_id, None)
+            await self._edit(query.message, "Cancelled.")
+            return
+        if chat_id in self._busy:
+            await bot.send_message(chat_id, bad(BUSY))
+            return
+        self._busy.add(chat_id)
+        self._pending.pop(chat_id, None)
+        try:
+            await query.message.delete()
+        except TelegramError:
+            pass
+        as_zip = act == "pz"
+        status = await Progress.begin(bot, chat_id, "Building ZIP" if as_zip else self.TITLES["h" if batch.kind == "highlight" else {"post": "p", "reel": "r", "story": "st"}[batch.kind]],
+                                      f"@{batch.username}", "Starting")
+        try:
+            outcome = await (self._send_zip(bot, chat_id, status, batch) if as_zip else self._send_many(bot, chat_id, status, batch))
+            await self._finish(status, batch.username, *outcome, how=" as ZIP" if as_zip else "")
+        except Exception as e:
+            if not isinstance(e, (PermissionError, RuntimeError)):
+                log.warning("Dump delivery for @%s failed: %s", batch.username, e)
+            await status.fail(self._explain(e))
+        finally:
+            self._busy.discard(chat_id)
+
+    async def _send_zip(self, bot, chat_id, status, batch: Batch) -> tuple[int, int]:
+        medias, user = batch.medias, batch.username
+        limit = max(1_000_000, self.ctx.tg.max_bytes - 1_000_000)
+        stem = f"{user}_{batch.kind}s" if batch.kind != "highlight" else f"{user}_highlight_{slug(batch.title, 'highlight')}"
+        used, info = 0, []
+        with tempfile.TemporaryDirectory(prefix="hyperig-zip-") as temp:
+            zipper = ZipParts(Path(temp), stem, limit)
+            for i, m in enumerate(medias, 1):
+                await status.set(f"Packing {i} of {len(medias)}", (i - 1) / len(medias))
+                items = items_of(m)
+                label = label_of(m, batch.kind)
+                got = 0
+                for j, (kind, url) in enumerate(items, 1):
+                    data = await self._fetch(url)
+                    if not data:
+                        continue
+                    ext = "mp4" if kind == "video" else "jpg"
+                    ident = slug(str(getattr(m, "code", "") or getattr(m, "pk", "")), "media")
+                    base = f"{i:02d}_story_{ident}" if batch.kind == "story" else f"{i:02d}_{ident}"
+                    name = f"{base}_{j}.{ext}" if len(items) > 1 else f"{base}.{ext}"
+                    await asyncio.to_thread(zipper.add, name, data)
+                    got += 1
+                if got:
+                    used += 1
+                    text = batch.title if batch.kind == "highlight" and i == 1 else None
+                    info.append(info_entry(i, label, link_of(m, label, user, batch.url), meta_of(m, user, text, batch.date if batch.kind == "highlight" else None)))
+            if not zipper.parts:
+                raise RuntimeError("None of the files could be downloaded.")
+            note = f"@{user} - {batch.kind} export\n\n" + "\n\n".join(info) + "\n"
+            await asyncio.to_thread(zipper.add, "info.txt", note.encode("utf-8"), True, False)
+            parts = zipper.finish()
+            profile = f"https://www.instagram.com/{user}/"
+            for idx, path in enumerate(parts, 1):
+                await status.set(f"Uploading part {idx} of {len(parts)}", None)
+                data = await asyncio.to_thread(path.read_bytes)
+                caption = build_zip_caption(batch.kind, user, batch.url or profile, zipper.counts[idx - 1], len(data), idx, len(parts), len(medias))
+                await tg_call(lambda: bot.send_document(
+                    chat_id, document=InputFile(data, filename=path.name), caption=caption, parse_mode="HTML",
+                    read_timeout=300, write_timeout=300,
+                ))
+        return used, len(medias)
 
     async def _show_highlights(self, bot, chat_id: int, username: str) -> None:
         try:
@@ -420,6 +581,10 @@ class DumpModule(BaseModule):
         act, _, arg = rest.partition(":")
         bot, chat_id = context.bot, query.message.chat_id
 
+        if act in ("pz", "ps", "pc"):
+            await self._on_choice(bot, query, act, arg)
+            return
+
         if act == "h":
             hl_pk, _, username = arg.partition(":")
             if hl_pk.isdigit() and USERNAME_RE.match(username):
@@ -481,7 +646,8 @@ class DumpModule(BaseModule):
         return chat_id in self._awaiting
 
     def cancel_pending(self, chat_id: int) -> bool:
-        return self._awaiting.pop(chat_id, None) is not None
+        dropped = self._pending.pop(chat_id, None) is not None
+        return (self._awaiting.pop(chat_id, None) is not None) or dropped
 
     async def on_text(self, text: str, update) -> bool:
         message = update.effective_message

@@ -102,37 +102,49 @@ async def send_one(bot, chat_id: int, kind: str, data: bytes, caption: str, repl
             await tg_call(
                 lambda: bot.send_video(
                     chat_id, video=InputFile(data, filename="video.mp4"), caption=cap, parse_mode="HTML", supports_streaming=True,
-                    reply_markup=reply_markup,
+                    reply_markup=reply_markup, read_timeout=120, write_timeout=120,
                 )
             )
     except BadRequest as e:
         log.info("Telegram refused the %s (%s), sending it as a file", kind, e)
         name = "photo.jpg" if kind == "photo" else "video.mp4"
-        await tg_call(lambda: bot.send_document(chat_id, document=InputFile(data, filename=name), caption=cap, parse_mode="HTML", reply_markup=reply_markup))
+        await tg_call(lambda: bot.send_document(chat_id, document=InputFile(data, filename=name), caption=cap, parse_mode="HTML", reply_markup=reply_markup, read_timeout=120, write_timeout=120))
 
 
-async def send_items(bot, chat_id: int, items: list[tuple[str, str]], caption: str, fetch: Fetch) -> int:
+async def fetch_items(items: list[tuple[str, str]], fetch: Fetch) -> list[tuple[str, bytes]]:
     files: list[tuple[str, bytes]] = []
-    for kind, url in items[:10]:
+    for kind, url in items:
         data = await fetch(url)
         if data:
             files.append((kind, data))
+    return files
+
+
+async def send_files(bot, chat_id: int, files: list[tuple[str, bytes]], caption: str) -> int:
+    """Send downloaded files, in albums of up to 10. The caption goes on the first message only."""
     if not files:
         return 0
-    if len(files) == 1:
-        await send_one(bot, chat_id, files[0][0], files[0][1], caption)
-        return 1
-    media = []
-    for i, (kind, data) in enumerate(files):
-        cap = caption[:1024] if i == 0 else None
-        if kind == "photo":
-            media.append(InputMediaPhoto(media=data, caption=cap, parse_mode="HTML"))
-        else:
-            media.append(InputMediaVideo(media=data, caption=cap, parse_mode="HTML", supports_streaming=True))
-    try:
-        await tg_call(lambda: bot.send_media_group(chat_id, media=media))
-    except BadRequest as e:
-        log.info("Album refused (%s), sending the files one by one", e)
-        for i, (kind, data) in enumerate(files):
-            await send_one(bot, chat_id, kind, data, caption if i == 0 else "")
+    for start in range(0, len(files), 10):
+        chunk = files[start : start + 10]
+        cap = caption if start == 0 else ""
+        if len(chunk) == 1:
+            await send_one(bot, chat_id, chunk[0][0], chunk[0][1], cap)
+            continue
+        media = []
+        for i, (kind, data) in enumerate(chunk):
+            first = cap[:1024] if i == 0 and cap else None
+            if kind == "photo":
+                media.append(InputMediaPhoto(media=data, caption=first, parse_mode="HTML" if first else None))
+            else:
+                media.append(InputMediaVideo(media=data, caption=first, parse_mode="HTML" if first else None, supports_streaming=True))
+        try:
+            await tg_call(lambda: bot.send_media_group(chat_id, media=media, read_timeout=180, write_timeout=180))
+        except BadRequest as e:
+            log.info("Album refused (%s), sending the files one by one", e)
+            for i, (kind, data) in enumerate(chunk):
+                await send_one(bot, chat_id, kind, data, cap if i == 0 else "")
     return len(files)
+
+
+async def send_items(bot, chat_id: int, items: list[tuple[str, str]], caption: str, fetch: Fetch) -> int:
+    return await send_files(bot, chat_id, await fetch_items(items, fetch), caption)

@@ -15,12 +15,11 @@ from telegram.error import BadRequest
 from core.auth import describe_error
 from modules.base import BaseModule
 from utils.logger import get_logger
-from utils.tgsend import DONE_REACTION, clip, esc, send_one, set_reaction
+from utils.caption import CAPTION_LIMIT, CAPTION_TZ, build_caption, fmt_size, short_num  # noqa: F401
+from utils.tgsend import DONE_REACTION, clip, esc, send_one, set_reaction  # noqa: F401
 from utils.ui import BUSY, NOT_CONNECTED, bad
 
 TELEGRAM_MAX_BYTES = 50 * 1024 * 1024
-CAPTION_TZ = timezone.utc
-CAPTION_LIMIT = 1024
 AUDIO_EXTENSIONS = (".m4a", ".mp3", ".aac", ".ogg", ".wav")
 
 log = get_logger("autodl")
@@ -33,60 +32,6 @@ _RESERVED = {
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 _TRAILING_PUNCTUATION = ".,!?;:)]}>"
 _LINK_RE = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/\S+", re.I)
-
-
-def short_num(value) -> str | None:
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return None
-    if n < 0:
-        return None
-    if n < 1000:
-        return str(n)
-    if round(n / 1000, 1) < 1000:
-        return f"{n / 1000:.1f}".rstrip("0").rstrip(".") + "K"
-    return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
-
-
-def build_caption(kind: str, url: str, size_bytes: int, meta: dict | None) -> str:
-    meta = meta or {}
-    stats = []
-    likes, comments = short_num(meta.get("likes")), short_num(meta.get("comments"))
-    if likes is not None:
-        stats.append(f"❤️ {likes}")
-    if comments is not None:
-        stats.append(f"💬 {comments}")
-    if meta.get("author"):
-        stats.append(f"👤 {esc(meta['author'])}")
-    taken = meta.get("date")
-    if taken is not None:
-        try:
-            stats.append("📅 " + taken.astimezone(CAPTION_TZ).strftime("%Y/%m/%d %H:%M:%S"))
-        except (AttributeError, ValueError, OSError):
-            pass
-    head = f"📥 <b>Instagram {esc(kind.title())}</b>"
-    tail = f'<a href="{html.escape(url, quote=True)}">Open on Instagram</a>\nSize: {fmt_size(size_bytes)}'
-    text = (meta.get("caption") or "").strip()
-    limit = 800
-    while True:
-        parts = [head]
-        if text:
-            parts.append(esc(clip(text, limit)))
-        if stats:
-            parts.append("\n".join(stats))
-        parts.append(tail)
-        caption = "\n\n".join(parts)
-        if len(caption) <= CAPTION_LIMIT or limit <= 50:
-            return caption
-        limit -= 100
-
-
-def fmt_size(num_bytes: int) -> str:
-    if num_bytes < 1024 * 1024:
-        return f"{max(1, round(num_bytes / 1024))}KB"
-    mb = round(num_bytes / (1024 * 1024), 1)
-    return f"{mb:g}MB"
 
 
 def normalize_instagram_url(raw: str) -> str | None:
