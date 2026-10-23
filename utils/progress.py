@@ -54,7 +54,7 @@ class Progress:
         await self._push(self._render(self.title, self.subject, step, fraction, count))
 
     async def done(self, summary: str) -> None:
-        await self._push(f"<b>Done</b>\n{html.escape(summary)}", force=True)
+        await self._push(f"✅ <b>Done</b>\n{html.escape(summary)}", force=True)
 
     async def fail(self, reason: str) -> None:
-        await self._push(f"<b>Failed</b>\n{html.escape(reason)}", force=True)
+        await self._push(f"❌ <b>Failed</b>\n{html.escape(reason)}", force=True)

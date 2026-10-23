@@ -3,9 +3,11 @@
 A Telegram bot for Instagram. Every user connects their own Instagram account inside the bot, then can:
 
 - paste an Instagram link (reel, post, story, highlight) and get the media; Reels carry a button for their original audio (needs `ffmpeg` installed for a clean .m4a)
-- send a username (`x.tahseen`, `@x.tahseen` or an `instagram.com/x.tahseen` link) to open a public profile: posts, reels, stories, highlights, followers and following exports
-- watch public accounts from `/watchlist` and get new posts, stories and profile changes in the chat
+- send a username (`x.tahseen`, `@x.tahseen` or an `instagram.com/x.tahseen` link) to open a public profile: posts, reels, stories, highlights, profile picture, JSON, followers and following exports
+- watch public accounts from the Watchlist (`/watchlist`): new posts, stories, highlights, profile changes, edits and milestones are sent to the chat
 - check `/status`, change `/settings`, and delete everything with `/logout`
+
+Commands: `/start` `/help` `/status` `/watchlist` `/settings` `/connect` `/logout` `/cancel` `/profile` `/pfp` `/posts` `/reels` `/stories` `/highlights` `/followers` `/following`. `/help` lists them with usage.
 
 There is no bridge, web dashboard or realtime connection. The bot only talks to Instagram when you ask it to, or when the watcher checks.
 
@@ -18,7 +20,7 @@ There is no bridge, web dashboard or realtime connection. The bot only talks to 
 
 Only the resulting session is stored, per Telegram user. Nobody can use anyone else's account, and `/logout` deletes the session, settings and watchlist.
 
-Limits: 10 watched accounts per user, one running job per chat, files up to 50 MB. Public accounts only.
+Limits: 10 watched accounts per user (`MAX_WATCH`), one running job per chat, files up to 50 MB. Public accounts only.
 
 ## Run
 

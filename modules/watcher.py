@@ -17,12 +17,12 @@ from utils import media as media_utils
 from utils.logger import get_logger
 from utils.prefs import DEFAULTS
 from utils.tgsend import caption_of, clip, esc, items_of, send_items
+from utils.ui import CORE_COMMANDS, NOT_CONNECTED, bad, btn, kb, onoff, screen
 
 log = get_logger("watcher")
 
 PACES = {"safe": (1200, (10.0, 20.0)), "normal": (600, (6.0, 14.0)), "fast": (300, (4.0, 8.0))}
 TICK = 60
-MAX_WATCH = 10
 MAX_NEW_PER_CHECK = 5
 THROTTLE_PAUSE = 900
 CHECK_NOW_GAP = 120
@@ -103,7 +103,7 @@ def _ago(ts: float) -> str:
 class WatcherModule(BaseModule):
     name = "watcher"
     toggleable = True
-    label = "Watcher (/watchlist, new posts, stories and changes)"
+    label = "Watchlist"
     description = "Get new posts, reels, stories and changes of public accounts"
 
     def __init__(self, ctx):
@@ -118,12 +118,13 @@ class WatcherModule(BaseModule):
         self._last_check = 0.0
         self._paused_until = 0.0
         self._awaiting: dict[int, tuple[str, str]] = {}
+        self._back: dict[int, str] = {}
         self._alerted: set[str] = set()
         self.errors: deque = deque(maxlen=8)
 
     def get_commands(self):
         return {
-            "watchlist": Command(self.cmd_watchlist, "Manage watched accounts", "/watchlist", takes_update=True),
+            "watchlist": Command(self.cmd_watchlist, CORE_COMMANDS["watchlist"][0], CORE_COMMANDS["watchlist"][1], takes_update=True),
         }
 
     def get_callbacks(self):
@@ -141,6 +142,10 @@ class WatcherModule(BaseModule):
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
+
+    @property
+    def max_watch(self) -> int:
+        return int(getattr(self.ctx.cfg, "max_watch", 10) or 10)
 
     def _pref(self, key: str):
         prefs = getattr(self.ctx, "prefs", None)
@@ -161,7 +166,7 @@ class WatcherModule(BaseModule):
 
     async def _ig(self, fn):
         if not self.ctx.ig.logged_in:
-            raise RuntimeError("Instagram is not connected. Use /connect.")
+            raise RuntimeError(NOT_CONNECTED)
         return await self.ctx.ig._call(fn)
 
     async def _fetch(self, url: str) -> bytes | None:
@@ -234,11 +239,6 @@ class WatcherModule(BaseModule):
                 if not await self._check_list(due):
                     self._paused_until = time.time() + THROTTLE_PAUSE
 
-    async def _check_all(self) -> bool:
-        self._force = True
-        await self._tick()
-        return time.time() >= self._paused_until
-
     async def _check_list(self, names: list[str]) -> bool:
         gap = self._pace()[1]
         for i, username in enumerate(names):
@@ -286,6 +286,9 @@ class WatcherModule(BaseModule):
             return False
         if info.needs_you:
             log.warning("Watcher stopped this round: %s", info.text)
+            if info.kind == "session":
+                self.ctx.ig.logged_in = False
+            await self._alert_once(f"needs:{info.kind}:{int(time.time() // 3600)}", f"⚠️ {esc(info.text)}")
             return False
         log.warning("Watcher check for @%s failed (%s: %s)", username, type(e).__name__, str(e)[:200])
         return True
@@ -464,13 +467,13 @@ class WatcherModule(BaseModule):
     async def add_account(self, username: str, flags: set[str]) -> tuple[bool, str]:
         async with self._lock:
             if username in self._watch:
-                return False, f"👁 Already watching @{username}. Change it from /watchlist."
-            if len(self._watch) >= MAX_WATCH:
-                return False, f"⚠️ The limit is {MAX_WATCH} watched accounts (keeps the Instagram login safe). Remove one first."
+                return False, bad(f"Already watching @{esc(username)}. Change it from the Watchlist.")
+            if len(self._watch) >= self.max_watch:
+                return False, bad(f"The limit is {self.max_watch} watched accounts (keeps the Instagram login safe). Remove one first.")
         try:
             user = await self._ig(lambda: self.ctx.ig.cl.user_info_by_username(username, False))
             if user.is_private:
-                return False, "🔒 That account is private. I only watch public accounts."
+                return False, bad("That account is private. I only watch public accounts.")
             entry = new_entry(str(user.pk), flags)
             await self._check_one(username, entry)
         except Exception as e:
@@ -478,13 +481,12 @@ class WatcherModule(BaseModule):
         now = time.time()
         entry["last"], entry["next"] = now, now + self._interval(entry) * random.uniform(0.8, 1.3)
         async with self._lock:
-            if username in self._watch or len(self._watch) >= MAX_WATCH:
-                return False, "⚠️ Could not add it: already watched, or the list is full."
+            if username in self._watch or len(self._watch) >= self.max_watch:
+                return False, bad("Could not add it: already watched, or the list is full.")
             self._watch[username] = entry
             await self._save()
         return True, (
-            f"👁 Watching <b>@{esc(username)}</b> ({summary(entry)}).\n"
-            "What is already there is not sent; you get what appears from now on."
+            f"✅ Added <b>@{esc(username)}</b>. What is already there is not sent; you get what appears from now on."
         )
 
     async def remove_account(self, username: str) -> bool:
@@ -531,11 +533,19 @@ class WatcherModule(BaseModule):
         }
 
     async def cmd_watchlist(self, args, update):
-        text, markup = self.list_view()
+        chat_id = update.effective_message.chat_id
+        self._back[chat_id] = "nav:start"
+        text, markup = self.list_view(back="nav:start")
         await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
     def is_awaiting(self, chat_id: int) -> bool:
         return chat_id in self._awaiting
+
+    def cancel_pending(self, chat_id: int) -> bool:
+        return self._awaiting.pop(chat_id, None) is not None
+
+    def _list(self, chat_id: int, notice: str = "") -> tuple[str, InlineKeyboardMarkup]:
+        return self.list_view(notice, self._back.get(chat_id, "nav:start"))
 
     async def _edit(self, bot, chat_id: int, message_id: int, text: str, markup=None) -> None:
         try:
@@ -550,85 +560,87 @@ class WatcherModule(BaseModule):
         wanted = self._awaiting.pop(chat_id, None)
         if not wanted:
             return False
-        what, prompt_id = wanted
+        _what, prompt_id = wanted
         bot = update.get_bot()
-        back = InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"m:{PREFIX}:ls:-")]])
-        cancel = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"m:{PREFIX}:ls:-")]])
-        if what != "add":
-            return True
+        prompt_id = int(prompt_id)
+        cancel = kb([btn("Cancel", f"m:{PREFIX}:ls:-")])
         try:
             await message.delete()
         except TelegramError:
             pass
         if text.strip().lower() in ("cancel", "stop"):
-            await self._edit(bot, chat_id, int(prompt_id), *self.list_view())
+            await self._edit(bot, chat_id, prompt_id, *self._list(chat_id))
             return True
         target = parse_target(text.split()[0] if text.split() else "")
         if not target:
             self._awaiting[chat_id] = wanted
-            await self._edit(bot, chat_id, int(prompt_id),
-                             "That isn't a username. Send one like nasa or @nasa.", cancel)
+            await self._edit(bot, chat_id, prompt_id,
+                             screen("Add account", bad("That is not a username.") + "\nSend one like nasa or @nasa."), cancel)
             return True
-        await self._edit(bot, chat_id, int(prompt_id),
-                         f"⏳ Adding <b>@{esc(target)}</b>…\nChecking the account and recording what is already there. "
-                         "This can take up to a minute.")
+        await self._edit(
+            bot, chat_id, prompt_id,
+            screen("Add account", f"⏳ Adding <b>@{esc(target)}</b>. Checking the account and recording what is already "
+                                  "there. This can take up to a minute."),
+        )
         ok, reply = await self.add_account(target, set(DEFAULT_FLAGS))
-        await self._edit(bot, chat_id, int(prompt_id), reply, back)
+        if ok:
+            await self._edit(bot, chat_id, prompt_id, *self._account_view(target, notice=reply))
+        else:
+            await self._edit(bot, chat_id, prompt_id, screen("Add account", reply),
+                             kb([btn("Try again", f"m:{PREFIX}:add:-")], [btn("Back", f"m:{PREFIX}:ls:-")]))
         return True
 
     @staticmethod
     def _row(items, size: int = 3) -> list[list[InlineKeyboardButton]]:
         return [items[i:i + size] for i in range(0, len(items), size)]
 
-    @staticmethod
-    def _opt(label: str, current: bool, data: str) -> InlineKeyboardButton:
-        return InlineKeyboardButton(f"[{label}]" if current else label, callback_data=data)
-
-    def list_view(self, notice: str = "") -> tuple[str, InlineKeyboardMarkup]:
-        lines = [f"<b>Watchlist</b>  {len(self._watch)} of {MAX_WATCH}", ""]
+    def list_view(self, notice: str = "", back: str = "nav:start") -> tuple[str, InlineKeyboardMarkup]:
+        lines = []
         if notice:
-            lines = [notice, ""] + lines
+            lines += [notice, ""]
         if not self._watch:
             lines.append("No accounts yet. Tap Add account and send a username.")
         else:
-            lines.append("Tap an account to choose what to watch on it. ⏸ marks a paused account.")
-        lines.append("")
-        if self._watch:
-            lines.append(f"Last check: {_ago(self._last_check)}")
+            lines.append(f"{len(self._watch)} of {self.max_watch} accounts. Tap one to choose what to watch on it. ⏸ marks a paused account.")
+            lines += ["", f"Last check: {_ago(self._last_check)}"]
         if time.time() < self._paused_until:
             lines.append("Paused after an Instagram rate limit; it resumes on its own.")
-        rows = self._row([InlineKeyboardButton(("⏸ " if e["paused"] else "") + f"@{u}"[:24], callback_data=f"m:{PREFIX}:ac:{u}") for u, e in self._watch.items()])
+        rows = self._row([
+            btn(("⏸ " if e["paused"] else "") + f"@{u}"[:24], f"m:{PREFIX}:ac:{u}") for u, e in self._watch.items()
+        ])
         all_paused = bool(self._watch) and all(e["paused"] for e in self._watch.values())
         rows.append([
-            InlineKeyboardButton("Add account", callback_data=f"m:{PREFIX}:add:-"),
-            InlineKeyboardButton("Check now", callback_data=f"m:{PREFIX}:now:-"),
-            InlineKeyboardButton("Resume all" if all_paused else "Pause all", callback_data=f"m:{PREFIX}:pa:-"),
+            btn("Add account", f"m:{PREFIX}:add:-"),
+            btn("Check now", f"m:{PREFIX}:now:-"),
+            btn("Resume all" if all_paused else "Pause all", f"m:{PREFIX}:pa:-"),
         ])
-        rows.append([InlineKeyboardButton("Back", callback_data="nav:settings")])
-        return "\n".join(lines), InlineKeyboardMarkup(rows)
+        rows.append([btn("Back", back)])
+        return screen("Watchlist", "\n".join(lines)), kb(*rows)
 
-    def _account_view(self, username: str) -> tuple[str, InlineKeyboardMarkup]:
+    def _account_view(self, username: str, notice: str = "") -> tuple[str, InlineKeyboardMarkup]:
         entry = self._watch.get(username)
-        back = InlineKeyboardButton("Watchlist", callback_data=f"m:{PREFIX}:ls:-")
+        back = btn("Back", f"m:{PREFIX}:ls:-")
         if not entry:
-            return "That account is not on the watchlist.", InlineKeyboardMarkup([[back]])
-        text = (
-            f"<b>@{esc(username)}</b>{' (paused)' if entry['paused'] else ''}\n\n"
+            return screen("Watchlist", bad("That account is not on the watchlist.")), kb([back])
+        body = (
             f"Watching: {summary(entry)}\n"
             f"Last check: {_ago(entry['last'])}\n\n"
             "Tap to switch each one on or off. Turning one on starts from now."
         )
+        if notice:
+            body = f"{notice}\n\n{body}"
+        title = f"@{username}" + (" (paused)" if entry["paused"] else "")
         toggles = [
-            InlineKeyboardButton(f"{name}: {'on' if entry[key] else 'off'}", callback_data=f"m:{PREFIX}:t:{code}:{username}")
+            btn(f"{name}: {onoff(entry[key])}", f"m:{PREFIX}:t:{code}:{username}")
             for code, (key, name, _short) in FLAGS.items()
         ]
-        rows = self._row(toggles, 3)
+        rows = self._row(toggles, 2)
         rows.append([
-            InlineKeyboardButton("Resume" if entry["paused"] else "Pause", callback_data=f"m:{PREFIX}:pz:{username}"),
-            InlineKeyboardButton("Remove", callback_data=f"m:{PREFIX}:rm:{username}"),
+            btn("Resume" if entry["paused"] else "Pause", f"m:{PREFIX}:pz:{username}"),
+            btn("Remove", f"m:{PREFIX}:rm:{username}"),
         ])
         rows.append([back])
-        return text, InlineKeyboardMarkup(rows)
+        return screen(title, body), kb(*rows)
 
     async def _show(self, query, text: str, markup) -> None:
         try:
@@ -639,24 +651,28 @@ class WatcherModule(BaseModule):
     async def on_button(self, rest: str, query, context) -> None:
         act, _, arg = rest.partition(":")
         message = query.message
+        chat_id = message.chat_id
         if act == "ls":
-            self._awaiting.pop(message.chat_id, None)
-            await self._show(query, *self.list_view())
+            self._awaiting.pop(chat_id, None)
+            if arg in ("h", "s"):
+                self._back[chat_id] = "nav:start" if arg == "h" else "nav:settings"
+            await self._show(query, *self._list(chat_id))
             return
         if act == "add":
             other = self.ctx.modules.get("dump") if self.ctx.modules else None
             if other is not None:
-                other._awaiting.pop(message.chat_id, None)
-            self._awaiting[message.chat_id] = ("add", str(message.message_id))
+                other.cancel_pending(chat_id)
+            self._awaiting[chat_id] = ("add", str(message.message_id))
             await self._show(
-                query, "➕ <b>Add account</b>\n\nSend the username to watch (like nasa or @nasa).\n"
-                "It will be watched for everything; switch features off afterwards from the account's menu.",
-                InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"m:{PREFIX}:ls:-")]]),
+                query,
+                screen("Add account", "Send the username to watch (like nasa or @nasa).\n"
+                                      "It will be watched for everything; switch features off afterwards from the account's menu."),
+                kb([btn("Cancel", f"m:{PREFIX}:ls:-")]),
             )
             return
         if act == "now":
-            ok, text = self.request_check_now()
-            await message.reply_text(text)
+            _ok, text = self.request_check_now()
+            await self._show(query, *self._list(chat_id, text))
             return
         if act == "pa":
             pause = not all(e["paused"] for e in self._watch.values())
@@ -664,7 +680,7 @@ class WatcherModule(BaseModule):
                 e["paused"] = pause
             async with self._lock:
                 await self._save()
-            await self._show(query, *self.list_view())
+            await self._show(query, *self._list(chat_id))
             return
         if act == "t":
             code, _, username = arg.partition(":")
@@ -679,11 +695,13 @@ class WatcherModule(BaseModule):
             await self.update_entry(username, paused=not entry["paused"])
             await self._show(query, *self._account_view(username))
         elif act == "rm" and entry:
-            markup = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Yes, remove", callback_data=f"m:{PREFIX}:rc:{username}"),
-                  InlineKeyboardButton("Keep", callback_data=f"m:{PREFIX}:ac:{username}")]]
+            await self._show(
+                query,
+                screen("Remove account", f"Stop watching <b>@{esc(username)}</b>?"),
+                kb([btn("Yes, remove", f"m:{PREFIX}:rc:{username}"), btn("Keep", f"m:{PREFIX}:ac:{username}")]),
             )
-            await self._show(query, f"Stop watching <b>@{esc(username)}</b>?", markup)
         elif act == "rc":
             await self.remove_account(username)
-            await self._show(query, *self.list_view())
+            await self._show(query, *self._list(chat_id, f"Stopped watching @{esc(username)}."))
+        else:
+            await self._show(query, *self._list(chat_id))

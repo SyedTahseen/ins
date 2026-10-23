@@ -14,6 +14,7 @@ from utils import media as media_utils
 from utils.logger import get_logger
 from utils.progress import Progress
 from utils.tgsend import caption_of, clip as _clip, esc as _esc, items_of, num as _num, send_items, send_one, set_reaction, DONE_REACTION
+from utils.ui import BUSY, NOT_CONNECTED, bad, screen
 
 log = get_logger("dump")
 
@@ -48,8 +49,8 @@ def _btn(text: str, act: str, arg: str) -> InlineKeyboardButton:
 class DumpModule(BaseModule):
     name = "dump"
     toggleable = True
-    label = "Profile tools (send a username, /profile, /posts ...)"
-    description = "Public profile card with action buttons, plus profile commands"
+    label = "Profile tools"
+    description = "Send a username to open a public profile, or use /profile, /posts and the other profile commands"
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -75,7 +76,7 @@ class DumpModule(BaseModule):
 
     def _need_login(self) -> None:
         if not self.ctx.ig.logged_in:
-            raise RuntimeError("Instagram is not connected. Use /connect.")
+            raise RuntimeError(NOT_CONNECTED)
 
     async def _ig(self, fn):
         self._need_login()
@@ -138,8 +139,9 @@ class DumpModule(BaseModule):
         if not private:
             rows.append([_btn("Posts", "pm", username), _btn("Reels", "rm", username)])
             rows.append([_btn("Stories", "st", username), _btn("Highlights", "hl", username)])
+        rows.append([_btn("Profile picture", "pp", username), _btn("Profile JSON", "js", username)])
+        if not private:
             rows.append([_btn("Followers / Following", "lm", username)])
-        rows.append([_btn("JSON", "js", username)])
         rows.append([InlineKeyboardButton("Open on Instagram", url=f"https://www.instagram.com/{username}/")])
         return InlineKeyboardMarkup(rows)
 
@@ -147,9 +149,7 @@ class DumpModule(BaseModule):
     def _count_menu(kind: str, username: str) -> InlineKeyboardMarkup:
         counts = (5, 10, 20, POSTS_MAX) if kind == "p" else (3, 5, 10, REELS_MAX)
         row = [_btn(f"{n}", f"{kind}{n}", username) for n in counts]
-        label = "posts" if kind == "p" else "reels"
-        return InlineKeyboardMarkup([row, [_btn("Type a number", "cu", f"{kind}:{username}")],
-                                     [_btn(f"Back (how many {label}?)", "bk", username)]])
+        return InlineKeyboardMarkup([row, [_btn("Type a number", "cu", f"{kind}:{username}")], [_btn("Back", "bk", username)]])
 
     def _list_menu(self, chat_id: int, username: str) -> InlineKeyboardMarkup:
         fmt = self._fmt.get(chat_id, "txt")
@@ -157,7 +157,7 @@ class DumpModule(BaseModule):
         for kind, label in (("f", "Followers"), ("g", "Following")):
             rows.append([_btn(f"{label} {n}", f"l{kind}{n}", username) for n in (100, 500, 1000)])
             rows.append([_btn(f"{label}: type a number", "cu", f"l{kind}:{username}")])
-        rows.append([_btn(f"File format: {fmt.upper()} (tap to switch)", "ft", username)])
+        rows.append([_btn(f"File format: {fmt.upper()}", "ft", username)])
         rows.append([_btn("Back", "bk", username)])
         return InlineKeyboardMarkup(rows)
 
@@ -196,7 +196,7 @@ class DumpModule(BaseModule):
             await self._show_highlights(bot, chat_id, username)
             return
         if chat_id in self._busy:
-            await bot.send_message(chat_id, "Another job is still running here. Wait for it to finish.")
+            await bot.send_message(chat_id, bad(BUSY))
             return
         self._busy.add(chat_id)
         status = await Progress.begin(bot, chat_id, self.TITLES.get(act, "Working"), f"@{username}", "Reading profile")
@@ -318,10 +318,10 @@ class DumpModule(BaseModule):
             user = await self._public_profile(username)
             highlights = await self._ig(lambda: self.ctx.ig.cl.user_highlights(str(user.pk)))
         except Exception as e:
-            await bot.send_message(chat_id, self._explain(e))
+            await bot.send_message(chat_id, bad(self._explain(e)))
             return
         if not highlights:
-            await bot.send_message(chat_id, f"@{username} has no highlights.")
+            await bot.send_message(chat_id, bad(f"@{username} has no highlights."))
             return
         rows, row = [], []
         for h in highlights[:HIGHLIGHT_BUTTONS]:
@@ -333,14 +333,14 @@ class DumpModule(BaseModule):
         if row:
             rows.append(row)
         await bot.send_message(
-            chat_id, f"⭐ <b>Highlights of @{_esc(username)}</b>\nTap one to download it.", parse_mode="HTML",
+            chat_id, screen(f"Highlights of @{username}", "Tap one to download it."), parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(rows),
         )
 
     async def _target(self, args, update, usage: str) -> str | None:
         username = parse_target(args[0]) if args else None
         if not username:
-            await update.effective_message.reply_text(f"Usage: {usage}\n(a username, @username or instagram.com link)")
+            await update.effective_message.reply_text(bad(f"Usage: {usage}\nUse a username, @username or instagram.com link."))
         return username
 
     async def _card_message(self, update, username: str, detailed: bool, with_menu: bool) -> bool:
@@ -348,7 +348,7 @@ class DumpModule(BaseModule):
         try:
             user = await self._profile(username)
         except Exception as e:
-            await message.reply_text(self._explain(e))
+            await message.reply_text(bad(self._explain(e)))
             return False
         text = self._card(user, detailed)
         markup = self._menu(username, bool(user.is_private)) if with_menu else None
@@ -431,7 +431,7 @@ class DumpModule(BaseModule):
             if kind in ("p", "r", "lf", "lg") and USERNAME_RE.match(who):
                 self._awaiting[chat_id] = (kind, who)
                 cap = {"p": POSTS_MAX, "r": REELS_MAX}.get(kind, LIST_MAX)
-                await bot.send_message(chat_id, f"Send how many (1-{cap}) for @{who}, or “cancel”.")
+                await bot.send_message(chat_id, f"Send a number from 1 to {cap} for @{who}, or send cancel.")
             return
 
         username = arg
@@ -455,7 +455,7 @@ class DumpModule(BaseModule):
                     try:
                         private = bool((await self._profile(username)).is_private)
                     except Exception as e:
-                        await query.message.reply_text(self._explain(e))
+                        await query.message.reply_text(bad(self._explain(e)))
                         return
                 markup = self._menu(username, private)
             else:
@@ -480,6 +480,9 @@ class DumpModule(BaseModule):
     def is_awaiting(self, chat_id: int) -> bool:
         return chat_id in self._awaiting
 
+    def cancel_pending(self, chat_id: int) -> bool:
+        return self._awaiting.pop(chat_id, None) is not None
+
     async def on_text(self, text: str, update) -> bool:
         message = update.effective_message
         wanted = self._awaiting.pop(message.chat_id, None)
@@ -500,7 +503,7 @@ class DumpModule(BaseModule):
         cap = {"p": POSTS_MAX, "r": REELS_MAX}.get(kind, LIST_MAX)
         if not word.isdigit() or not 1 <= int(word) <= cap:
             self._awaiting[message.chat_id] = wanted
-            await message.reply_text(f"Send a number from 1 to {cap} (or “cancel”).")
+            await message.reply_text(f"Send a number from 1 to {cap}, or send cancel.")
             return True
         await self._run(update.get_bot(), message.chat_id, kind, username, int(word))
         return True

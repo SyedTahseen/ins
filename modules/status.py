@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from modules.base import BaseModule, Command
+from utils.ui import CORE_COMMANDS, esc, screen
 
 
 def _ago(ts) -> str:
@@ -19,24 +20,26 @@ class StatusModule(BaseModule):
     description = "Connection status"
 
     def get_commands(self):
-        return {"status": Command(self.status, "Account and watcher status", "/status")}
+        desc, usage = CORE_COMMANDS["status"]
+        return {"status": Command(self.status, desc, usage)}
 
     async def status(self, args):
         ig = self.ctx.ig
-        lines = ["Status", ""]
+        lines = []
         if ig.logged_in:
-            lines.append(f"Instagram: connected as @{ig.username} ({ig.auth.login_method})")
+            lines.append(f"Instagram: connected as @{esc(ig.username)} ({esc(ig.auth.login_method)})")
         else:
             lines.append("Instagram: not connected. Use /connect.")
             if ig.last_alert:
-                lines.append(ig.last_alert)
+                lines.append(esc(ig.last_alert))
         watcher = self.ctx.modules.get("watcher") if self.ctx.modules else None
         if watcher is not None:
             if not self.ctx.modules.is_enabled(watcher):
-                lines.append("Watcher: off")
+                lines.append("Watchlist: off")
             else:
                 h = watcher.health()
-                lines.append(f"Watcher: {h['accounts']} account(s), last check {_ago(h['last_check'])}")
+                paused = f", {h['paused']} paused" if h["paused"] else ""
+                lines.append(f"Watchlist: {h['accounts']} account(s){paused}, last check {_ago(h['last_check'])}")
                 for _when, user, text in h["errors"][-2:]:
-                    lines.append(f"  @{user}: {text}")
-        return "\n".join(lines)
+                    lines.append(f"@{esc(user)}: {esc(text)}")
+        return screen("Status", "\n".join(lines))

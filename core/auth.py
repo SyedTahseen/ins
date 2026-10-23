@@ -146,32 +146,31 @@ class ErrorInfo:
 def describe_error(e: Exception, cl=None) -> ErrorInfo:
     detail = str(e)[:300]
     if isinstance(e, ReloginAttemptExceeded):
-        return ErrorInfo("password", "Too many re-login attempts. Open the Instagram app, make sure the account is fine, then send /relogin.", True)
+        return ErrorInfo("password", "Too many login attempts. Open the Instagram app, make sure the account is fine, then reconnect with /connect.", True)
     if isinstance(e, ClientNeedsUpgradeError) or _needs_app_migration(e):
         return ErrorInfo(
             "password",
-            "Instagram blocked direct password login from this cloud server IP (CAA fallback returned needs_upgrade). "
-            "Log in using a browser session cookie instead: copy the 'sessionid' cookie from instagram.com and send "
-            "/cookie <sessionid> on Telegram (or in the web console), or set IG_SESSIONID in .env.",
+            "Instagram blocked the password login from this server. "
+            "Connect with a browser cookie instead: /connect, then Cookie.",
             True,
         )
     if isinstance(e, (BadPassword, BadCredentials)):
         return ErrorInfo(
             "password",
-            "Instagram rejected the login. If the password is right, this is usually a risk check on the IP or device: "
-            "open the Instagram app on the same network, approve any 'was this you?' prompt, then send /relogin, "
-            "or log in with a browser cookie using /cookie <sessionid>. "
+            "Instagram rejected the login. If the password is right, this is usually a risk check: "
+            "open the Instagram app, approve any 'was this you?' prompt, then try /connect again, "
+            "or connect with a browser cookie. "
             f"I will not retry automatically. ({detail})",
             True,
         )
     if isinstance(e, TwoFactorRequired):
-        return ErrorInfo("2fa", "Instagram needs a 2FA code and none arrived in time. Send /relogin and reply with /code, or set IG_TOTP_SECRET.", True)
+        return ErrorInfo("2fa", "Instagram needs a 2FA code and none arrived in time. Try /connect again and send the code when asked.", True)
     if isinstance(e, ChallengeSelfieCaptcha):
-        return ErrorInfo("challenge", "Instagram wants a selfie/captcha. Complete it in the official Instagram app, then send /relogin.", True)
+        return ErrorInfo("challenge", "Instagram wants a selfie/captcha. Complete it in the official Instagram app, then reconnect with /connect.", True)
     if isinstance(e, (RecaptchaChallengeForm, SelectContactPointRecoveryForm, ChallengeUnknownStep)):
-        return ErrorInfo("challenge", f"Instagram started a security check that can't be automated. Finish it in the Instagram app, then send /relogin. ({type(e).__name__})", True)
+        return ErrorInfo("challenge", f"Instagram started a security check that can't be automated. Finish it in the Instagram app, then reconnect with /connect. ({type(e).__name__})", True)
     if isinstance(e, ChallengeRequired):
-        return ErrorInfo("challenge", f"Instagram wants a security check. Approve it in the Instagram app, then send /relogin. ({detail})", True)
+        return ErrorInfo("challenge", f"Instagram wants a security check. Approve it in the Instagram app, then reconnect with /connect. ({detail})", True)
     if isinstance(e, FeedbackRequired):
         message = ""
         if cl is not None:
@@ -183,7 +182,7 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
     if isinstance(e, (PleaseWaitFewMinutes, ClientThrottledError)):
         return ErrorInfo("throttle", f"Instagram is rate-limiting us ({type(e).__name__}). Backing off.", False)
     if isinstance(e, (LoginRequired, ClientLoginRequired)):
-        return ErrorInfo("session", "The Instagram session expired.", True)
+        return ErrorInfo("session", "The Instagram session expired. Reconnect with /connect.", True)
     if _is_not_found(e):
         return ErrorInfo(
             "notfound",
@@ -304,7 +303,7 @@ class AuthManager:
     def _change_password_handler(self, username):
         msg = (
             "Instagram requires a password change for this account. Change it in the Instagram app, "
-            "update IG_PASSWORD, then send /relogin."
+            "then reconnect with /connect."
         )
         self.notify_threadsafe("🔒 " + msg)
         raise ChallengeRequired(msg)

@@ -10,12 +10,13 @@ from urllib.parse import urljoin, urlparse
 import requests
 from telegram import (InputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo,
                       ReplyParameters)
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest
 
 from core.auth import describe_error
 from modules.base import BaseModule
 from utils.logger import get_logger
 from utils.tgsend import DONE_REACTION, clip, esc, send_one, set_reaction
+from utils.ui import BUSY, NOT_CONNECTED, bad
 
 TELEGRAM_MAX_BYTES = 50 * 1024 * 1024
 CAPTION_TZ = timezone.utc
@@ -188,8 +189,8 @@ def _find_url(node, keys: tuple[str, ...], depth: int = 0, seen: set[int] | None
 class AutoDownloadModule(BaseModule):
     name = "autodl"
     toggleable = True
-    label = "Link downloader (paste a link)"
-    description = "Auto-detect Instagram links and download media to Telegram"
+    label = "Link downloader"
+    description = "Paste an Instagram link and get the media back"
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -200,7 +201,7 @@ class AutoDownloadModule(BaseModule):
 
     def _need_login(self) -> None:
         if not self.ctx.ig.logged_in:
-            raise RuntimeError("Instagram is not connected. Connect your account with /connect.")
+            raise RuntimeError(NOT_CONNECTED)
 
     async def _ig(self, fn):
         self._need_login()
@@ -452,7 +453,7 @@ class AutoDownloadModule(BaseModule):
         classified = classify_instagram_url(match.group(0).rstrip(".,)"))
         message = update.effective_message
         if not classified:
-            await message.reply_text("Unsupported link. Send an Instagram Reel, post, Story, Highlight, or profile URL.")
+            await message.reply_text(bad("Unsupported link. Send an Instagram Reel, post, Story, Highlight, or profile URL."))
             return True
         category, url = classified
         if category == "profile":
@@ -465,7 +466,7 @@ class AutoDownloadModule(BaseModule):
         chat_id = update.effective_chat.id
         bot = update.get_bot()
         if chat_id in self._busy:
-            await message.reply_text("Another download is still running in this chat. Please wait.")
+            await message.reply_text(bad(BUSY))
             return
         self._busy.add(chat_id)
         await set_reaction(bot, message, DONE_REACTION)
@@ -487,7 +488,7 @@ class AutoDownloadModule(BaseModule):
         except Exception as e:
             log.info("Instagram link download failed (%s: %s)", type(e).__name__, str(e)[:200])
             await set_reaction(bot, message)
-            await message.reply_text(self._explain(e))
+            await message.reply_text(bad(self._explain(e)))
         finally:
             self._busy.discard(chat_id)
 
@@ -545,7 +546,7 @@ class AutoDownloadModule(BaseModule):
                 await self._send_paths(bot, chat_id, paths, "", reply_to=reply_to)
         except Exception as e:
             reply = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
-            await bot.send_message(chat_id, self._explain(e), reply_parameters=reply)
+            await bot.send_message(chat_id, bad(self._explain(e)), reply_parameters=reply)
         finally:
             self._busy.discard(chat_id)
 
@@ -557,7 +558,7 @@ class AutoDownloadModule(BaseModule):
             if isinstance(error, (ig_exc.UserNotFound, ig_exc.ClientNotFoundError)):
                 return "That Instagram item or account was not found."
             if isinstance(error, ig_exc.PrivateAccount):
-                return "🔒 This account or item is private or is not accessible to the logged-in account."
+                return "This account or item is private or is not accessible to the logged-in account."
             info = describe_error(error, self.ctx.ig.cl)
             return f"{info.text}"
         except Exception:
@@ -570,7 +571,7 @@ class AutoDownloadModule(BaseModule):
             return
         chat_id = query.message.chat_id
         if chat_id in self._busy:
-            await query.answer("Another download is still running. Please wait.", show_alert=True)
+            await query.answer(BUSY, show_alert=True)
             return
         await query.answer("Fetching audio…")
         await self._download_audio_by_pk(context.bot, chat_id, argument, reply_to=query.message.message_id)

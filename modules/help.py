@@ -1,4 +1,5 @@
 from modules.base import BaseModule, Command
+from utils.ui import CORE_COMMANDS, esc, screen
 
 
 class HelpModule(BaseModule):
@@ -6,21 +7,30 @@ class HelpModule(BaseModule):
     description = "Command list"
 
     def get_commands(self):
-        return {"help": Command(self.help, "List commands, or details for one", "/help [command]")}
+        return {"help": Command(self.help, CORE_COMMANDS["help"][0], CORE_COMMANDS["help"][1])}
 
     async def help(self, args):
         manager = self.ctx.modules
         commands = manager.all_commands()
         if args:
             name = args[0].lstrip("/").lower()
-            found = commands.get(name)
-            if not found:
-                return f"No command named '{name}'."
-            cmd, _module = found
-            return f"/{name}\n{cmd.description}\nUsage: {cmd.usage or '/' + name}"
+            if name in CORE_COMMANDS:
+                desc, usage = CORE_COMMANDS[name]
+            elif name in commands:
+                cmd, _module = commands[name]
+                desc, usage = cmd.description, cmd.usage or f"/{name}"
+            else:
+                return f"❌ No command named /{esc(name)}."
+            return screen(f"/{name}", f"{esc(desc)}\n\nUsage: {esc(usage)}")
 
-        lines = ["Fetch IG commands", ""]
-        for name, (cmd, _module) in commands.items():
-            lines.append(f"/{name}  {cmd.description}")
-        lines += ["", "You can also paste an Instagram link to download it, or send a username (x.tahseen, @x.tahseen or an instagram.com link) to open a profile."]
-        return "\n".join(lines)
+        sections = ["<b>Basics</b>\n" + "\n".join(
+            f"{esc(usage)} - {esc(desc)}" for desc, usage in CORE_COMMANDS.values()
+        )]
+        for module in manager.modules:
+            own = {n: c for n, (c, m) in commands.items() if m is module and n not in CORE_COMMANDS}
+            if own:
+                sections.append(f"<b>{esc(module.label or module.name.title())}</b>\n" + "\n".join(
+                    f"{esc(c.usage or '/' + n)} - {esc(c.description)}" for n, c in own.items()
+                ))
+        tip = "Send an Instagram link to download it, or a username to open the profile."
+        return screen("Help", "\n\n".join(sections) + f"\n\n{tip}")

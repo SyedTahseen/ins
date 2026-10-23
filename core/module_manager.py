@@ -53,6 +53,13 @@ class ModuleManager:
         prefs = getattr(self.ctx, "prefs", None)
         return prefs.feature_on(module.name) if prefs else True
 
+    def cancel_pending(self, chat_id: int) -> bool:
+        cancelled = False
+        for module in self.modules:
+            if module.cancel_pending(chat_id):
+                cancelled = True
+        return cancelled
+
     async def handle_text(self, text: str, update) -> bool:
         chat_id = getattr(getattr(update, "effective_message", None), "chat_id", None)
         ordered = sorted(self.modules, key=lambda m: 0 if chat_id is not None and m.is_awaiting(chat_id) else 1)

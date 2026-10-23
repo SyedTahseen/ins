@@ -32,6 +32,9 @@ class BaseModule:
     async def on_stop(self) -> None:
         pass
 
+    def cancel_pending(self, chat_id: int) -> bool:
+        return False
+
     def is_awaiting(self, chat_id: int) -> bool:
         return False
 
