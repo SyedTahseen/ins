@@ -23,10 +23,10 @@ USERS_KEY = "users"
 WIPE_KEYS = ("session", "session_meta", "prefs", "watchlist")
 
 INTRO = (
-    "Fetch IG\n\n"
-    "Download from Instagram links, look at public profiles and watch accounts for new posts, "
-    "all through your own Instagram account.\n\n"
-    "Send /connect to link your account. Then paste an Instagram link or send a username, or open /help."
+    "<b>👋 Welcome!</b>\n\n"
+    "This bot is built to download and retrieve content from social media and music platforms. "
+    "Just send a link and the bot will automatically detect the service. 🚀\n\n"
+    "✨ Send your link — let the bot handle the rest. /help"
 )
 
 
@@ -156,7 +156,7 @@ class FetchIGBot:
         sess = await self.session(update.effective_user.id)
 
         if name == "start":
-            await message.reply_text(INTRO)
+            await message.reply_text(INTRO, parse_mode="HTML", reply_markup=self.start_markup())
         elif name == "connect":
             await self.connect_menu(sess, message)
         elif name == "logout":
@@ -295,9 +295,13 @@ class FetchIGBot:
             text = "Account\n\nNot connected."
         return text, kb([btn("Connect", "nav:connect"), btn("Disconnect", "nav:logout")], [btn("Back", "nav:settings")])
 
-    async def _show(self, query, text: str, markup) -> None:
+    @staticmethod
+    def start_markup() -> InlineKeyboardMarkup:
+        return kb([btn("Status", "nav:status"), btn("Watchlist", "m:watch:ls:-")], [btn("Connect", "nav:connect")])
+
+    async def _show(self, query, text: str, markup, parse_mode=None) -> None:
         try:
-            await query.edit_message_text(text, reply_markup=markup)
+            await query.edit_message_text(text, reply_markup=markup, parse_mode=parse_mode)
         except TelegramError:
             pass
 
@@ -320,7 +324,13 @@ class FetchIGBot:
             return
 
         await query.answer()
-        if data == "nav:settings":
+        if data == "nav:start":
+            await self._show(query, INTRO, self.start_markup(), "HTML")
+        elif data == "nav:status":
+            module = sess.modules.get("status")
+            text = await module.status([]) if module else "Status unavailable."
+            await self._show(query, text, kb([btn("Back", "nav:start")]))
+        elif data == "nav:settings":
             await self._show(query, *self.settings_view(sess))
         elif data == "nav:features":
             await self._show(query, *self.features_view(sess))
