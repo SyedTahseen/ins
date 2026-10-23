@@ -28,8 +28,8 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 URL_RE = re.compile(r"^(?:https?://)?(?:www\.|m\.)?(?:instagram\.com|instagr\.am)/([A-Za-z0-9._]{1,30})/?(?:[?#].*)?$", re.I)
 RESERVED = {"p", "reel", "reels", "stories", "explore", "tv", "accounts", "direct", "s"}
 
-POSTS_DEFAULT, POSTS_MAX = 5, 50
-REELS_DEFAULT, REELS_MAX = 3, 30
+# No default count: without a number the bot reads everything, up to this safety cap.
+POSTS_MAX = REELS_MAX = 500
 LIST_DEFAULT, LIST_MAX = 200, 2000
 HIGHLIGHT_BUTTONS = 20
 ZIP_THRESHOLD = 10  # fewer than this many items are sent normally; this many or more ask "ZIP or one by one?"
@@ -49,6 +49,7 @@ class Batch:
     title: str = ""  # highlight title
     url: str = ""  # highlight link
     date: object = None  # highlight date
+    capped: bool = False  # the account has more than the safety cap
     made: float = field(default_factory=time.monotonic)
 
 
@@ -84,8 +85,8 @@ class DumpModule(BaseModule):
         return {
             "profile": Command(self.cmd_profile, "Public profile info", "/profile <username or link>", takes_update=True),
             "pfp": Command(self.cmd_pfp, "Profile picture (full size)", "/pfp <username>", takes_update=True),
-            "posts": Command(self.cmd_posts, f"Latest posts (1-{POSTS_MAX}, default {POSTS_DEFAULT})", "/posts <username> [count]", takes_update=True),
-            "reels": Command(self.cmd_reels, f"Latest reels (1-{REELS_MAX}, default {REELS_DEFAULT})", "/reels <username> [count]", takes_update=True),
+            "posts": Command(self.cmd_posts, f"All posts, or the latest N (up to {POSTS_MAX})", "/posts <username> [count]", takes_update=True),
+            "reels": Command(self.cmd_reels, f"All reels, or the latest N (up to {REELS_MAX})", "/reels <username> [count]", takes_update=True),
             "stories": Command(self.cmd_stories, "Current stories", "/stories <username>", takes_update=True),
             "highlights": Command(self.cmd_highlights, "Highlights list with buttons", "/highlights <username>", takes_update=True),
             "followers": Command(self.cmd_followers, f"Followers list as a file (up to {LIST_MAX})", "/followers <username> [count] [json]", takes_update=True),
@@ -168,8 +169,7 @@ class DumpModule(BaseModule):
 
     @staticmethod
     def _count_menu(kind: str, username: str) -> InlineKeyboardMarkup:
-        counts = (5, 10, 20, POSTS_MAX) if kind == "p" else (3, 5, 10, REELS_MAX)
-        row = [_btn(f"{n}", f"{kind}{n}", username) for n in counts]
+        row = [_btn("All", f"{kind}0", username)] + [_btn(f"{n}", f"{kind}{n}", username) for n in (5, 10, 20)]
         return InlineKeyboardMarkup([row, [_btn("Type a number", "cu", f"{kind}:{username}")], [_btn("Back", "bk", username)]])
 
     def _list_menu(self, chat_id: int, username: str) -> InlineKeyboardMarkup:
@@ -284,15 +284,17 @@ class DumpModule(BaseModule):
             return await self._send_list(bot, chat_id, status, user, act == "lf", n)
 
         if act in ("p", "r"):
+            cap = POSTS_MAX if act == "p" else REELS_MAX
+            everything = not n
+            n = max(1, min(n, cap)) if n else cap
+            await status.set("Reading the list of posts" if act == "p" else "Reading the list of reels", None)
             if act == "p":
-                n = max(1, min(n or POSTS_DEFAULT, POSTS_MAX))
                 medias = await self._ig(lambda: self.ctx.ig.cl.user_medias(pk, n))
             else:
-                n = max(1, min(n or REELS_DEFAULT, REELS_MAX))
                 medias = await self._ig(lambda: self.ctx.ig.cl.user_clips(pk, n))
             if not medias:
                 raise RuntimeError("No posts found." if act == "p" else "No reels found.")
-            return Batch(medias[:n], "post" if act == "p" else "reel", username)
+            return Batch(medias[:n], "post" if act == "p" else "reel", username, capped=everything and len(medias) >= cap)
 
         if act == "st":
             stories = await self._ig(lambda: self.ctx.ig.cl.user_stories(pk))
@@ -388,6 +390,8 @@ class DumpModule(BaseModule):
         mb = self.ctx.tg.max_bytes // 1_000_000
         body = (f"{count} {word}, {files} files in total. That is a lot to send one by one.\n"
                 f"A ZIP is a single file (split into parts if it goes over {mb} MB).")
+        if batch.capped:
+            body += f"\nThis account has more; only the latest {count} were read."
         title = f"{count} {word} from @{batch.username}"
         markup = InlineKeyboardMarkup([
             [_btn("Send as ZIP", "pz", str(self._seq)), _btn("One by one", "ps", str(self._seq))],
@@ -566,10 +570,10 @@ class DumpModule(BaseModule):
         await self._simple(args, update, "/pfp <username>", "pp")
 
     async def cmd_posts(self, args, update):
-        await self._simple(args, update, "/posts <username> [count]", "p", POSTS_DEFAULT, POSTS_MAX)
+        await self._simple(args, update, "/posts <username> [count]", "p", 0, POSTS_MAX)
 
     async def cmd_reels(self, args, update):
-        await self._simple(args, update, "/reels <username> [count]", "r", REELS_DEFAULT, REELS_MAX)
+        await self._simple(args, update, "/reels <username> [count]", "r", 0, REELS_MAX)
 
     async def cmd_stories(self, args, update):
         await self._simple(args, update, "/stories <username>", "st")
