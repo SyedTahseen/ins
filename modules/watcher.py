@@ -642,16 +642,13 @@ class WatcherModule(BaseModule):
         if not self._watch:
             lines.append("No accounts yet. Tap Add account and send a username.")
         else:
-            lines.append("Tap an account to choose what to watch on it.")
-            lines.append("")
-        for user, entry in self._watch.items():
-            lines.append(f"@{esc(user)}: {summary(entry)}" + (" (paused)" if entry["paused"] else ""))
+            lines.append("Tap an account to choose what to watch on it. ⏸ marks a paused account.")
         lines.append("")
         if self._watch:
             lines.append(f"Last check: {_ago(self._last_check)}")
         if time.time() < self._paused_until:
             lines.append("Paused after an Instagram rate limit; it resumes on its own.")
-        rows = self._row([InlineKeyboardButton(f"@{u}"[:24], callback_data=f"m:{PREFIX}:ac:{u}") for u in self._watch])
+        rows = self._row([InlineKeyboardButton(("⏸ " if e["paused"] else "") + f"@{u}"[:24], callback_data=f"m:{PREFIX}:ac:{u}") for u, e in self._watch.items()])
         all_paused = bool(self._watch) and all(e["paused"] for e in self._watch.values())
         rows.append([
             InlineKeyboardButton("Add account", callback_data=f"m:{PREFIX}:add:-"),
