@@ -26,7 +26,7 @@ INTRO = (
     "Fetch IG\n\n"
     "Download from Instagram links, look at public profiles and watch accounts for new posts, "
     "all through your own Instagram account.\n\n"
-    "Send /connect to link your account. Then paste an Instagram link, or open /help."
+    "Send /connect to link your account. Then paste an Instagram link or send a username, or open /help."
 )
 
 
@@ -98,7 +98,6 @@ class FetchIGBot:
         await app.bot.set_my_commands([
             BotCommand("start", "Start Fetch IG "),
             BotCommand("status", "Status"),
-            BotCommand("dump", "Profile tools"),
             BotCommand("watch", "Watch an account"),
             BotCommand("watchlist", "Manage watched accounts"),
             BotCommand("settings", "Settings"),

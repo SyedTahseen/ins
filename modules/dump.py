@@ -1,8 +1,8 @@
 """Public-profile tools for Telegram.
 
-/dump <username or link> shows a profile card with a button menu (posts, reels, stories, highlights,
-followers and following lists, JSON). Plain commands (/profile, /pfp, /posts, /reels, /stories, /highlights) do the
-same things without the menu.
+Send a username (x.tahseen), @username or an instagram.com/username link and you get a profile card with a
+button menu (posts, reels, stories, highlights, followers and following lists, JSON). Plain commands (/profile,
+/pfp, /posts, /reels, /stories, /highlights) do the same things without the menu.
 
 Rules this module keeps:
 * PUBLIC accounts only. A private account gets its public card and nothing else.
@@ -25,12 +25,12 @@ from modules.base import BaseModule, Command
 from utils import media as media_utils
 from utils.logger import get_logger
 from utils.progress import Progress
-from utils.tgsend import caption_of, clip as _clip, esc as _esc, items_of, num as _num, send_items, send_one
+from utils.tgsend import caption_of, clip as _clip, esc as _esc, items_of, num as _num, send_items, send_one, set_reaction
 
 log = get_logger("dump")
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
-URL_RE = re.compile(r"^(?:https?://)?(?:www\.)?instagram\.com/([A-Za-z0-9._]{1,30})/?(?:[?#].*)?$", re.I)
+URL_RE = re.compile(r"^(?:https?://)?(?:www\.|m\.)?(?:instagram\.com|instagr\.am)/([A-Za-z0-9._]{1,30})/?(?:[?#].*)?$", re.I)
 RESERVED = {"p", "reel", "reels", "stories", "explore", "tv", "accounts", "direct", "s"}
 
 POSTS_DEFAULT, POSTS_MAX = 5, 50
@@ -38,6 +38,12 @@ REELS_DEFAULT, REELS_MAX = 3, 30
 LIST_DEFAULT, LIST_MAX = 200, 2000   # followers / following list size
 HIGHLIGHT_BUTTONS = 20
 PREFIX = "dump"
+WORKING_REACTIONS = ("🕓", "👀")
+# Everyday one-word messages that look like a username but are not meant as one.
+NOT_USERNAMES = {
+    "hi", "hii", "hello", "hey", "yo", "thanks", "thank", "thx", "ty", "ok", "okay", "yes", "no", "yep", "nope",
+    "test", "start", "help", "stop", "cancel", "bye", "lol", "wow", "nice", "good", "cool", "done", "sure",
+}
 
 
 def parse_target(raw: str) -> str | None:
@@ -57,7 +63,7 @@ def _btn(text: str, act: str, arg: str) -> InlineKeyboardButton:
 class DumpModule(BaseModule):
     name = "dump"
     toggleable = True
-    label = "Profile tools (/dump, /profile, /posts ...)"
+    label = "Profile tools (send a username, /profile, /posts ...)"
     description = "Public profile card with action buttons, plus profile commands"
 
     def __init__(self, ctx):
@@ -70,7 +76,6 @@ class DumpModule(BaseModule):
     # ------------------------------------------------------------------ registration
     def get_commands(self):
         return {
-            "dump": Command(self.cmd_dump, "Profile card with action buttons", "/dump <username or link>", takes_update=True),
             "profile": Command(self.cmd_profile, "Public profile info", "/profile <username or link>", takes_update=True),
             "pfp": Command(self.cmd_pfp, "Profile picture (full size)", "/pfp <username>", takes_update=True),
             "posts": Command(self.cmd_posts, f"Latest posts (1-{POSTS_MAX}, default {POSTS_DEFAULT})", "/posts <username> [count]", takes_update=True),
@@ -383,11 +388,6 @@ class DumpModule(BaseModule):
                 log.info("Card photo refused (%s), sending text", e)
         await message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
-    async def cmd_dump(self, args, update):
-        username = await self._target(args, update, "/dump <username or link>")
-        if username:
-            await self._card_message(update, username, detailed=True, with_menu=True)
-
     async def cmd_profile(self, args, update):
         username = await self._target(args, update, "/profile <username or link>")
         if username:
@@ -508,7 +508,17 @@ class DumpModule(BaseModule):
         message = update.effective_message
         wanted = self._awaiting.pop(message.chat_id, None)
         if not wanted:
-            return False
+            # Nothing was asked for, so a lone username or profile link opens that profile.
+            name = await self._username_in(text)
+            if not name:
+                return False
+            bot = update.get_bot()
+            await set_reaction(bot, message, *WORKING_REACTIONS)
+            try:
+                await self._card_message(update, name, detailed=True, with_menu=True)
+            finally:
+                await set_reaction(bot, message)
+            return True
         kind, username = wanted
         word = text.strip().lower()
         if word in ("cancel", "stop"):
@@ -521,3 +531,18 @@ class DumpModule(BaseModule):
             return True
         await self._run(update.get_bot(), message.chat_id, kind, username, int(word))
         return True
+
+    async def _username_in(self, text: str) -> str | None:
+        """A message that is just a username / @username / profile link (or has a profile link in it)."""
+        tokens = (text or "").split()
+        if len(tokens) == 1:
+            token = tokens[0]
+            if token.lower().lstrip("@") in NOT_USERNAMES:
+                return None
+            return parse_target(token)
+        for token in tokens:  # a sentence: only a real link counts, never a loose word
+            if token.lower().startswith(("http://", "https://")):
+                name = parse_target(token)
+                if name:
+                    return name
+        return None

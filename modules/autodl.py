@@ -5,8 +5,9 @@ Downloads use instagrapi's media-specific helpers and a temporary folder so full
 files can be uploaded to Telegram without leaving files behind.
 """
 import html
-import time
 import re
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -19,9 +20,12 @@ from telegram.error import BadRequest, TelegramError
 from core.auth import describe_error
 from modules.base import BaseModule
 from utils.logger import get_logger
-from utils.tgsend import send_one
+from utils.tgsend import send_one, set_reaction
 
 TELEGRAM_MAX_BYTES = 50 * 1024 * 1024
+# Shown on the user's message while a link is being downloaded; the first one Telegram allows is used.
+WORKING_REACTIONS = ("🕓", "👀")
+AUDIO_EXTENSIONS = (".m4a", ".mp3", ".aac", ".ogg", ".wav")
 
 log = get_logger("autodl")
 
@@ -394,14 +398,6 @@ class AutoDownloadModule(BaseModule):
                     sent += 1
         return sent
 
-    @staticmethod
-    async def _react(bot, message, emoji: str) -> None:
-        """React to the user's message. Never fatal (old Telegram clients / library versions just skip it)."""
-        try:
-            await bot.set_message_reaction(message.chat_id, message.message_id, reaction=[emoji])
-        except Exception as e:
-            log.debug("Could not react to the message (%s)", type(e).__name__)
-
     async def on_text(self, text: str, update) -> bool:
         """Any message containing an Instagram link is downloaded. No command needed."""
         match = _LINK_RE.search(text or "")
@@ -414,15 +410,7 @@ class AutoDownloadModule(BaseModule):
             return True
         category, url = classified
         if category == "profile":
-            manager = getattr(self.ctx, "modules", None)
-            found = manager.all_commands().get("dump") if manager else None
-            username = urlparse(url).path.strip("/").split("/", 1)[0]
-            if found and _USERNAME_RE.fullmatch(username):
-                command, _module = found
-                await command.handler([username], update)
-            else:
-                await message.reply_text(f"Use /dump {username or url} to open the profile card.")
-            return True
+            return False  # a profile link is handled by the profile module (modules/dump.py)
         await self._run(update, url, category)
         return True
 
@@ -434,7 +422,7 @@ class AutoDownloadModule(BaseModule):
             await message.reply_text("Another download is still running in this chat. Please wait.")
             return
         self._busy.add(chat_id)
-        await self._react(bot, message, "👀")  # "working on it" shows on the user's own message
+        await set_reaction(bot, message, *WORKING_REACTIONS)  # "working on it" shows on the user's own message
         try:
             with tempfile.TemporaryDirectory(prefix="hyperig-dl-") as temp:
                 folder = Path(temp)
@@ -455,13 +443,47 @@ class AutoDownloadModule(BaseModule):
                         [[InlineKeyboardButton("Download original audio", callback_data=f"m:autodl:a:{result['pk']}")]]
                     )
                 await self._send_paths(bot, chat_id, paths, caption, markup=markup)
-            await self._react(bot, message, "👍")
         except Exception as e:
             log.info("Instagram link download failed (%s)", type(e).__name__)
-            await self._react(bot, message, "👎")
             await message.reply_text(self._explain(e))
         finally:
             self._busy.discard(chat_id)
+            await set_reaction(bot, message)  # done (or failed, with a reply): take the reaction off again
+
+    @staticmethod
+    def _has_video_track(path: Path) -> bool:
+        """True if an MP4/M4A file has a video track (its 'hdlr' box says 'vide' instead of 'soun')."""
+        try:
+            return re.search(rb"hdlr.{8}vide", path.read_bytes(), re.S) is not None
+        except OSError:
+            return False
+
+    def _as_audio(self, path: Path) -> Path:
+        """Instagram serves the sound as an .mp4 URL, which Telegram shows as a video/file. Return a real .m4a.
+        Uses ffmpeg when installed (also strips a video track); an audio-only MP4 is already M4A, so without
+        ffmpeg it is just renamed."""
+        if path.suffix.lower() in AUDIO_EXTENSIONS:
+            return path
+        out = path.with_name("original_audio.m4a")
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            for codec in (["-c:a", "copy"], ["-c:a", "aac", "-b:a", "160k"]):
+                try:
+                    done = subprocess.run(
+                        [ffmpeg, "-y", "-loglevel", "error", "-i", str(path), "-vn", *codec, str(out)],
+                        capture_output=True, timeout=120,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    break
+                if done.returncode == 0 and out.exists() and out.stat().st_size > 0:
+                    return out
+        if not self._has_video_track(path):
+            path.rename(out)
+            return out
+        raise RuntimeError(
+            "Instagram only provides this sound inside a video file, and ffmpeg is needed to extract the audio. "
+            "Install it (sudo apt install ffmpeg) and try again."
+        )
 
     async def _download_audio_by_pk(self, bot, chat_id: int, media_pk: str, reply_to: int | None = None) -> None:
         self._busy.add(chat_id)
@@ -475,7 +497,8 @@ class AutoDownloadModule(BaseModule):
                     try:
                         media = cl.media_info(media_pk)
                         audio_url = self._track_url(cl, media)
-                        return self._paths(cl.track_download_by_url(audio_url, filename="original_audio", folder=folder), folder)
+                        files = self._paths(cl.track_download_by_url(audio_url, filename="original_audio", folder=folder), folder)
+                        return [self._as_audio(f) for f in files]
                     finally:
                         cl.delay_range = saved
 

@@ -31,6 +31,29 @@ def num(value) -> str:
         return "?"
 
 
+_REJECTED_REACTIONS: set[str] = set()   # emoji Telegram refused for bots, so we stop asking
+
+
+async def set_reaction(bot, message, *emojis: str) -> None:
+    """React to a user's message with the first emoji Telegram accepts. With no emoji, the reaction is removed.
+    Never raises: reactions are decoration, so an old client or library just skips them."""
+    try:
+        if not emojis:
+            await bot.set_message_reaction(message.chat_id, message.message_id, reaction=[])
+            return
+        for emoji in emojis:
+            if emoji in _REJECTED_REACTIONS:
+                continue
+            try:
+                await bot.set_message_reaction(message.chat_id, message.message_id, reaction=[emoji])
+                return
+            except BadRequest as e:
+                log.info("Telegram does not allow the %s reaction for bots (%s)", emoji, e)
+                _REJECTED_REACTIONS.add(emoji)
+    except Exception as e:
+        log.debug("Could not set the reaction (%s)", type(e).__name__)
+
+
 async def tg_call(call):
     """Run a Telegram call, waiting out flood limits (up to 3 tries)."""
     for _ in range(2):

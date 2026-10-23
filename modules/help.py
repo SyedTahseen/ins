@@ -22,5 +22,5 @@ class HelpModule(BaseModule):
         lines = ["Fetch IG commands", ""]
         for name, (cmd, _module) in commands.items():
             lines.append(f"/{name}  {cmd.description}")
-        lines += ["", "You can also paste an Instagram link and it will be downloaded."]
+        lines += ["", "You can also paste an Instagram link to download it, or send a username (x.tahseen, @x.tahseen or an instagram.com link) to open a profile."]
         return "\n".join(lines)
