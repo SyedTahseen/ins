@@ -1,3 +1,4 @@
+import base64
 import html
 import re
 import shutil
@@ -179,7 +180,24 @@ class AutoDownloadModule(BaseModule):
         return unique
 
     @staticmethod
+    def _shared_highlight_pk(url: str) -> str | None:
+        """Share links look like /s/<base64 of "highlight:<pk>">?story_media_id=..., so no network is needed."""
+        parts = [p for p in urlparse(url).path.split("/") if p]
+        if len(parts) < 2 or parts[0].lower() != "s":
+            return None
+        token = parts[1]
+        try:
+            decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        match = re.fullmatch(r"highlight:(\d+)", decoded)
+        return match.group(1) if match else None
+
+    @staticmethod
     def _highlight_pk(cl, url: str) -> str:
+        shared = AutoDownloadModule._shared_highlight_pk(url)
+        if shared:
+            return shared
         try:
             return str(cl.highlight_pk_from_url(url))
         except Exception as original_error:
