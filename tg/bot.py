@@ -11,7 +11,7 @@ from core.module_manager import ModuleManager
 from utils.db import ScopedStore
 from utils.logger import get_logger
 from utils.prefs import PACES, Prefs
-from utils.ui import CORE_COMMANDS, bad, btn, esc, kb, onoff, screen
+from utils.ui import BLUE, CORE_COMMANDS, RED, bad, btn, esc, kb, onoff, screen
 
 log = get_logger("bot")
 
@@ -221,7 +221,7 @@ class FetchIGBot:
 
     @staticmethod
     def home_view() -> tuple[str, InlineKeyboardMarkup]:
-        return INTRO, kb([btn("Status", "nav:status"), btn("Watchlist", "m:watch:ls:h")], [btn("Connect", "nav:connect")])
+        return INTRO, kb([btn("Status", "nav:status", RED), btn("Watchlist", "m:watch:ls:h", BLUE)], [btn("Connect", "nav:connect")])
 
     def status_view_markup(self) -> InlineKeyboardMarkup:
         return kb([btn("Back", "nav:start")])

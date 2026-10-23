@@ -17,7 +17,7 @@ from utils import media as media_utils
 from utils.logger import get_logger
 from utils.prefs import DEFAULTS
 from utils.tgsend import caption_of, clip, esc, items_of, send_items
-from utils.ui import CORE_COMMANDS, NOT_CONNECTED, bad, btn, kb, onoff, screen
+from utils.ui import BLUE, CORE_COMMANDS, NOT_CONNECTED, bad, btn, kb, onoff, screen
 
 log = get_logger("watcher")
 
@@ -587,7 +587,7 @@ class WatcherModule(BaseModule):
             await self._edit(bot, chat_id, prompt_id, *self._account_view(target, notice=reply))
         else:
             await self._edit(bot, chat_id, prompt_id, screen("Add account", reply),
-                             kb([btn("Try again", f"m:{PREFIX}:add:-")], [btn("Back", f"m:{PREFIX}:ls:-")]))
+                             kb([btn("Try again", f"m:{PREFIX}:add:-")], [btn("Back", f"m:{PREFIX}:ls:-", BLUE)]))
         return True
 
     @staticmethod
@@ -614,12 +614,12 @@ class WatcherModule(BaseModule):
             btn("Check now", f"m:{PREFIX}:now:-"),
             btn("Resume all" if all_paused else "Pause all", f"m:{PREFIX}:pa:-"),
         ])
-        rows.append([btn("Back", back)])
+        rows.append([btn("Back", back, BLUE)])
         return screen("Watchlist", "\n".join(lines)), kb(*rows)
 
     def _account_view(self, username: str, notice: str = "") -> tuple[str, InlineKeyboardMarkup]:
         entry = self._watch.get(username)
-        back = btn("Back", f"m:{PREFIX}:ls:-")
+        back = btn("Back", f"m:{PREFIX}:ls:-", BLUE)
         if not entry:
             return screen("Watchlist", bad("That account is not on the watchlist.")), kb([back])
         body = (

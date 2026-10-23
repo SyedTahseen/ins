@@ -31,10 +31,12 @@ GREEN, RED, BLUE = "success", "danger", "primary"
 STYLE_BY_LABEL = {
     "Connect": GREEN,
     "Send as ZIP": GREEN,
-    "Add account": GREEN,
     "Resume": GREEN,
     "Resume all": GREEN,
     "Keep": GREEN,
+    "One by one": BLUE,
+    "Pause": RED,
+    "Pause all": RED,
     "Cookie": BLUE,
     "Cancel": RED,
     "Disconnect": RED,
