@@ -1,28 +1,3 @@
-"""Watch public Instagram accounts and get what changes, in Telegram.
-
-Commands
-  /watchlist            the management screen (also: Settings -> Watchlist)
-
-What it can watch, per account (all switchable on the account's screen):
-  posts & reels    new ones, with the media           stories     new ones, saved before they expire
-  profile changes  name, bio, link, category, verified badge, profile picture
-  highlights       new highlights, and items added to existing ones
-  edits & removals caption edits; posts that disappeared (deleted or archived)
-  milestones       likes/comments crossing round numbers on recent posts; follower milestones
-Per account: pause, or switch each of the above on and off.
-
-This only sees what Instagram shows publicly about public accounts. Who someone follows, what they like or
-comment on elsewhere, DMs and activity times are not exposed and are not tracked.
-
-How it stays polite (instagrapi Best Practices: small list, minutes apart, remember what was seen):
-* At most MAX_WATCH accounts, each checked on its own schedule (default from the Safety setting) with jitter
-  and a pause between accounts. Nothing runs in a tight loop.
-* When an account or a feature is added, what exists is recorded silently; you only hear about what happens after.
-* Saved state means a restart never repeats or loses anything. An item counts as seen only after Telegram
-  took it (or it was queued for the digest).
-* Rate limits pause every check for THROTTLE_PAUSE and tell you once. An account that turns private or vanishes
-  is removed and you are told.
-"""
 import asyncio
 import hashlib
 import random
@@ -45,15 +20,14 @@ from utils.tgsend import caption_of, clip, esc, items_of, send_items
 
 log = get_logger("watcher")
 
-# pace -> (default seconds between checks of one account, random pause between two accounts)
 PACES = {"safe": (1200, (10.0, 20.0)), "normal": (600, (6.0, 14.0)), "fast": (300, (4.0, 8.0))}
-TICK = 60                      # how often the loop wakes up to see what is due
-MAX_WATCH = 10                 # accounts per Instagram login
-MAX_NEW_PER_CHECK = 5          # items sent per account per check; the rest are marked seen and summarised
-THROTTLE_PAUSE = 900           # seconds to stop everything after a rate limit
-CHECK_NOW_GAP = 120            # seconds between two manual "check now" presses
-SEEN_CAP = 300                 # remembered ids per list
-TRACK_POSTS = 12               # recent posts followed for edits / removals / milestones
+TICK = 60
+MAX_WATCH = 10
+MAX_NEW_PER_CHECK = 5
+THROTTLE_PAUSE = 900
+CHECK_NOW_GAP = 120
+SEEN_CAP = 300
+TRACK_POSTS = 12
 STORE_KEY = "watchlist"
 PREFIX = "watch"
 
@@ -61,7 +35,6 @@ LIKE_MS = (100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000)
 COMMENT_MS = (10, 50, 100, 500, 1_000, 5_000)
 FOLLOWER_MS = (1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 5_000_000, 10_000_000)
 
-# short code -> (key in the saved entry, name shown on buttons, short name in summaries)
 FLAGS = {
     "p": ("posts", "Posts & reels", "posts"),
     "s": ("stories", "Stories", "stories"),
@@ -74,8 +47,7 @@ WORDS = {
     "posts": "p", "reels": "p", "stories": "s", "profile": "pr", "highlights": "hl",
     "edits": "ed", "engagement": "en", "milestones": "en",
 }
-DEFAULT_FLAGS = set(FLAGS)   # new accounts watch everything; switch features off per account
-# state that starts as None and is recorded silently the first time its feature is on
+DEFAULT_FLAGS = set(FLAGS)
 BASELINES = {"posts": "seen_posts", "stories": "seen_stories", "profile": "snap", "highlights": "hl", "edits": "tracked", "engagement": "tracked"}
 
 
@@ -91,7 +63,6 @@ def new_entry(pk: str, flags: set[str]) -> dict:
 
 
 def normalize(entry: dict) -> dict:
-    """Fill in fields that older saved entries do not have."""
     for key, value in new_entry(entry.get("pk", ""), set()).items():
         entry.setdefault(key, value)
     return entry
@@ -102,7 +73,6 @@ def _remember(seen: list[str], new: list[str]) -> list[str]:
 
 
 def _crossed(value, steps: tuple[int, ...]) -> int:
-    """How many of the milestone steps `value` has reached (0 when unknown or hidden)."""
     try:
         value = int(value)
     except (TypeError, ValueError):
@@ -115,7 +85,6 @@ def _hash(text) -> str:
 
 
 def _pic_key(url) -> str:
-    """A profile picture URL carries a new signature every time; its path is what identifies the image."""
     return urlparse(str(url or "")).path
 
 
@@ -140,19 +109,18 @@ class WatcherModule(BaseModule):
     def __init__(self, ctx):
         super().__init__(ctx)
         self._watch: dict[str, dict] = {}
-        self._lock = asyncio.Lock()          # guards the watchlist and its saved copy
-        self._check_lock = asyncio.Lock()    # one check pass at a time
+        self._lock = asyncio.Lock()
+        self._check_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._kick = asyncio.Event()
         self._force = False
         self._last_kick = float("-inf")
         self._last_check = 0.0
         self._paused_until = 0.0
-        self._awaiting: dict[int, tuple[str, str]] = {}   # chat id -> (what we asked for, username)
+        self._awaiting: dict[int, tuple[str, str]] = {}
         self._alerted: set[str] = set()
-        self.errors: deque = deque(maxlen=8)  # (time, username, text) for the Health screen
+        self.errors: deque = deque(maxlen=8)
 
-    # ------------------------------------------------------------------ registration
     def get_commands(self):
         return {
             "watchlist": Command(self.cmd_watchlist, "Manage watched accounts", "/watchlist", takes_update=True),
@@ -174,7 +142,6 @@ class WatcherModule(BaseModule):
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
 
-    # ------------------------------------------------------------------ settings and helpers
     def _pref(self, key: str):
         prefs = getattr(self.ctx, "prefs", None)
         return prefs.get(key) if prefs else DEFAULTS[key]
@@ -216,9 +183,7 @@ class WatcherModule(BaseModule):
         except Exception:
             return f"❌ {esc(type(e).__name__)}: {esc(str(e))}"
 
-    # ------------------------------------------------------------------ where alerts go
     def _chats(self) -> list[int]:
-        """Alerts always go to your own chat with the bot."""
         chat = self.ctx.tg.chat_id
         return [chat] if chat else []
 
@@ -239,7 +204,6 @@ class WatcherModule(BaseModule):
             self._alerted.add(key)
             await self._send_text(text)
 
-    # ------------------------------------------------------------------ the loop
     async def _wait(self, seconds: float) -> None:
         try:
             await asyncio.wait_for(self._kick.wait(), timeout=seconds)
@@ -248,7 +212,7 @@ class WatcherModule(BaseModule):
         self._kick.clear()
 
     async def _loop(self) -> None:
-        await asyncio.sleep(random.uniform(20, 60))  # let login / realtime settle after a start
+        await asyncio.sleep(random.uniform(20, 60))
         while True:
             try:
                 if self._enabled() and self.ctx.ig.logged_in:
@@ -271,13 +235,11 @@ class WatcherModule(BaseModule):
                     self._paused_until = time.time() + THROTTLE_PAUSE
 
     async def _check_all(self) -> bool:
-        """Check every account now. Returns False if Instagram told us to slow down."""
         self._force = True
         await self._tick()
         return time.time() >= self._paused_until
 
     async def _check_list(self, names: list[str]) -> bool:
-        """Returns False when Instagram told us to slow down."""
         gap = self._pace()[1]
         for i, username in enumerate(names):
             entry = self._watch.get(username)
@@ -302,7 +264,6 @@ class WatcherModule(BaseModule):
         return True
 
     async def _handle_error(self, username: str, e: Exception) -> bool:
-        """Deal with a failed check. Returns False if all checks should pause."""
         try:
             from instagrapi import exceptions as ig_exc
 
@@ -329,7 +290,6 @@ class WatcherModule(BaseModule):
         log.warning("Watcher check for @%s failed (%s: %s)", username, type(e).__name__, str(e)[:200])
         return True
 
-    # ------------------------------------------------------------------ one account
     async def _check_one(self, username: str, entry: dict) -> None:
         pk = entry["pk"]
         medias = None
@@ -346,9 +306,7 @@ class WatcherModule(BaseModule):
         if entry["highlights"]:
             await self._highlights(username, entry)
 
-    # ---- new posts and reels
     async def _announce(self, username: str, m, label: str) -> bool:
-        """Deliver one new post/reel/story with its media. False = retry on the next check."""
         if label == "story":
             link = f"https://www.instagram.com/stories/{username}/{m.pk}/"
         else:
@@ -400,7 +358,6 @@ class WatcherModule(BaseModule):
         new = sorted((s for s in stories if str(s.pk) not in entry["seen_stories"]), key=lambda s: s.taken_at)
         await self._deliver(username, entry, "seen_stories", new, "story")
 
-    # ---- edits, removals, like/comment milestones
     async def _track_posts(self, username: str, entry: dict, medias: list) -> None:
         now_tracked = {
             str(m.pk): {
@@ -410,7 +367,7 @@ class WatcherModule(BaseModule):
             for m in medias
         }
         old = entry["tracked"]
-        if old is None:  # first time: record, say nothing
+        if old is None:
             entry["tracked"] = now_tracked
             return
         window_full = len(medias) >= TRACK_POSTS
@@ -421,7 +378,6 @@ class WatcherModule(BaseModule):
             link = f"https://www.instagram.com/p/{st['code']}/"
             m = by_pk.get(pk)
             if m is None:
-                # Gone from the latest posts. If the window is full the post may simply have scrolled out of it.
                 gone = not window_full or (oldest is not None and datetime.fromisoformat(st["ts"]) > oldest)
                 if gone and entry["edits"]:
                     lines.append(f"🗑 <b>@{esc(username)}</b> · a post is no longer there (deleted or archived)\n“{esc(st['t'])}”\n{link}")
@@ -439,16 +395,15 @@ class WatcherModule(BaseModule):
                 if comments > st["cm"]:
                     lines.append(f"💬 <b>@{esc(username)}</b> · a post passed {COMMENT_MS[comments - 1]:,} comments\n{link}")
         merged = {**now_tracked}
-        for pk, st in now_tracked.items():  # keep the highest milestone already announced
+        for pk, st in now_tracked.items():
             if pk in old:
                 st["lm"], st["cm"] = max(st["lm"], old[pk]["lm"]), max(st["cm"], old[pk]["cm"])
         entry["tracked"] = dict(sorted(merged.items(), key=lambda kv: kv[1]["ts"], reverse=True)[:TRACK_POSTS])
         for line in lines:
             await self._send_text(line)
 
-    # ---- profile changes, follower milestones
     async def _profile_changes(self, username: str, entry: dict) -> None:
-        user = await self._ig(lambda: self.ctx.ig.cl.user_info_by_username(username, False))  # False: skip the cache
+        user = await self._ig(lambda: self.ctx.ig.cl.user_info_by_username(username, False))
         if user.is_private:
             from instagrapi import exceptions as ig_exc
 
@@ -492,7 +447,6 @@ class WatcherModule(BaseModule):
         if entry["engagement"] and snap["fm"] > old.get("fm", 0):
             await self._send_text(f"🎉 {tag} · reached {FOLLOWER_MS[snap['fm'] - 1]:,} followers ({snap['f']:,} now)")
 
-    # ---- highlights
     async def _highlights(self, username: str, entry: dict) -> None:
         found = await self._ig(lambda: self.ctx.ig.cl.user_highlights(entry["pk"]))
         now_counts = {str(h.pk).split(":")[-1]: int(h.media_count or 0) for h in found}
@@ -507,7 +461,6 @@ class WatcherModule(BaseModule):
             elif count > old[pk]:
                 await self._send_text(f"⭐ <b>@{esc(username)}</b> · “{esc(titles[pk])}” got {count - old[pk]} new item(s)")
 
-    # ------------------------------------------------------------------ adding, changing, removing
     async def add_account(self, username: str, flags: set[str]) -> tuple[bool, str]:
         async with self._lock:
             if username in self._watch:
@@ -519,7 +472,7 @@ class WatcherModule(BaseModule):
             if user.is_private:
                 return False, "🔒 That account is private. I only watch public accounts."
             entry = new_entry(str(user.pk), flags)
-            await self._check_one(username, entry)  # every enabled feature records what exists now, silently
+            await self._check_one(username, entry)
         except Exception as e:
             return False, self._explain(e)
         now = time.time()
@@ -548,7 +501,7 @@ class WatcherModule(BaseModule):
         key = FLAGS[code][0]
         entry[key] = not entry[key]
         if entry[key]:
-            entry[BASELINES[key]] = None  # starts from "now": record silently on the next check
+            entry[BASELINES[key]] = None
         async with self._lock:
             await self._save()
 
@@ -577,12 +530,10 @@ class WatcherModule(BaseModule):
             "errors": list(self.errors),
         }
 
-    # ------------------------------------------------------------------ commands
     async def cmd_watchlist(self, args, update):
         text, markup = self.list_view()
         await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
-    # ------------------------------------------------------------------ typing flow (add account)
     def is_awaiting(self, chat_id: int) -> bool:
         return chat_id in self._awaiting
 
@@ -591,7 +542,7 @@ class WatcherModule(BaseModule):
             await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode="HTML",
                                         reply_markup=markup, disable_web_page_preview=True)
         except TelegramError:
-            pass  # unchanged text, or the message is gone
+            pass
 
     async def on_text(self, text: str, update) -> bool:
         message = update.effective_message
@@ -599,14 +550,14 @@ class WatcherModule(BaseModule):
         wanted = self._awaiting.pop(chat_id, None)
         if not wanted:
             return False
-        what, prompt_id = wanted   # prompt_id: the message that asked for the username (edited in place)
+        what, prompt_id = wanted
         bot = update.get_bot()
         back = InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"m:{PREFIX}:ls:-")]])
         cancel = InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data=f"m:{PREFIX}:ls:-")]])
         if what != "add":
             return True
         try:
-            await message.delete()   # keep the chat clean: the typed username is not needed any more
+            await message.delete()
         except TelegramError:
             pass
         if text.strip().lower() in ("cancel", "stop"):
@@ -625,7 +576,6 @@ class WatcherModule(BaseModule):
         await self._edit(bot, chat_id, int(prompt_id), reply, back)
         return True
 
-    # ------------------------------------------------------------------ screens
     @staticmethod
     def _row(items, size: int = 3) -> list[list[InlineKeyboardButton]]:
         return [items[i:i + size] for i in range(0, len(items), size)]
@@ -635,7 +585,6 @@ class WatcherModule(BaseModule):
         return InlineKeyboardButton(f"[{label}]" if current else label, callback_data=data)
 
     def list_view(self, notice: str = "") -> tuple[str, InlineKeyboardMarkup]:
-        """The accounts being watched, with the actions that apply to the whole list."""
         lines = [f"<b>Watchlist</b>  {len(self._watch)} of {MAX_WATCH}", ""]
         if notice:
             lines = [notice, ""] + lines
@@ -685,19 +634,19 @@ class WatcherModule(BaseModule):
         try:
             await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         except TelegramError:
-            pass  # unchanged text, or the message is gone
+            pass
 
     async def on_button(self, rest: str, query, context) -> None:
         act, _, arg = rest.partition(":")
         message = query.message
         if act == "ls":
-            self._awaiting.pop(message.chat_id, None)   # also the Cancel button of the add prompt
+            self._awaiting.pop(message.chat_id, None)
             await self._show(query, *self.list_view())
             return
         if act == "add":
             other = self.ctx.modules.get("dump") if self.ctx.modules else None
             if other is not None:
-                other._awaiting.pop(message.chat_id, None)   # drop any half-finished question from the profile menu
+                other._awaiting.pop(message.chat_id, None)
             self._awaiting[message.chat_id] = ("add", str(message.message_id))
             await self._show(
                 query, "➕ <b>Add account</b>\n\nSend the username to watch (like nasa or @nasa).\n"
@@ -717,7 +666,7 @@ class WatcherModule(BaseModule):
                 await self._save()
             await self._show(query, *self.list_view())
             return
-        if act == "t":  # t:<code>:<user>
+        if act == "t":
             code, _, username = arg.partition(":")
             await self.toggle_flag(username, code)
             await self._show(query, *self._account_view(username))

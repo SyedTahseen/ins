@@ -1,4 +1,3 @@
-"""Loads every plugin in modules/."""
 import importlib
 import inspect
 import pkgutil
@@ -49,17 +48,13 @@ class ModuleManager:
         return next((m for m in self.modules if m.name == name), None)
 
     def is_enabled(self, module: BaseModule) -> bool:
-        """Modules marked toggleable can be switched off in Settings; everything else is always on."""
         if not getattr(module, "toggleable", False):
             return True
         prefs = getattr(self.ctx, "prefs", None)
         return prefs.feature_on(module.name) if prefs else True
 
     async def handle_text(self, text: str, update) -> bool:
-        """Offer a plain private-chat message to every enabled module; the first one that uses it wins."""
         chat_id = getattr(getattr(update, "effective_message", None), "chat_id", None)
-        # A module that just asked a question (e.g. "send the username to watch") must get the answer
-        # before the link / profile openers, otherwise a bare username is taken as a profile lookup.
         ordered = sorted(self.modules, key=lambda m: 0 if chat_id is not None and m.is_awaiting(chat_id) else 1)
         for module in ordered:
             if not self.is_enabled(module):
@@ -86,7 +81,6 @@ class ModuleManager:
                 log.exception("Module %s failed to stop", module.name)
 
     async def process_message(self, message):
-        """Run a message through every module. A module may return None to drop it."""
         for module in self.modules:
             try:
                 message = await module.process(message)

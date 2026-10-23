@@ -8,8 +8,6 @@ from utils import media as media_utils
 
 @dataclass
 class Tg:
-    """How modules reach one user: the bot, the user's chat, and the file download limit."""
-
     bot: Any
     chat_id: int
     max_bytes: int = 50 * 1_000_000
@@ -22,8 +20,6 @@ class Tg:
 
 @dataclass
 class AppContext:
-    """Everything a module may use. One per Telegram user, so users never share an account or data."""
-
     cfg: Any
     ig: Any
     store: Any

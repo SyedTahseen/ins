@@ -1,4 +1,3 @@
-"""Fetch IG entry point."""
 from config import load_config
 from tg.bot import FetchIGBot
 from utils.db import create_store

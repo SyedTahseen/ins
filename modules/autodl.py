@@ -1,9 +1,3 @@
-"""Auto-detect Instagram links sent to the Telegram bot and download their media.
-
-Supported: Reels, feed posts/carousels, Stories, Highlights and profile cards.
-Downloads use instagrapi's media-specific helpers and a temporary folder so full-resolution
-files can be uploaded to Telegram without leaving files behind.
-"""
 import html
 import re
 import shutil
@@ -24,8 +18,8 @@ from utils.logger import get_logger
 from utils.tgsend import DONE_REACTION, clip, esc, send_one, set_reaction
 
 TELEGRAM_MAX_BYTES = 50 * 1024 * 1024
-CAPTION_TZ = timezone.utc          # time zone of the date shown in the caption
-CAPTION_LIMIT = 1024               # Telegram's caption limit
+CAPTION_TZ = timezone.utc
+CAPTION_LIMIT = 1024
 AUDIO_EXTENSIONS = (".m4a", ".mp3", ".aac", ".ogg", ".wav")
 
 log = get_logger("autodl")
@@ -41,7 +35,6 @@ _LINK_RE = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/\S+", 
 
 
 def short_num(value) -> str | None:
-    """113700 -> '113.7K', 1250000 -> '1.2M'. None when Instagram hides the number."""
     try:
         n = int(value)
     except (TypeError, ValueError):
@@ -56,8 +49,6 @@ def short_num(value) -> str | None:
 
 
 def build_caption(kind: str, url: str, size_bytes: int, meta: dict | None) -> str:
-    """HTML caption: title, the post's own caption text, likes / comments / author / date, link and size.
-    Always fits Telegram's 1024-character caption limit (the caption text is what gets shortened)."""
     meta = meta or {}
     stats = []
     likes, comments = short_num(meta.get("likes")), short_num(meta.get("comments"))
@@ -91,7 +82,6 @@ def build_caption(kind: str, url: str, size_bytes: int, meta: dict | None) -> st
 
 
 def fmt_size(num_bytes: int) -> str:
-    """1.0 MB -> '1MB', 4.3 MB -> '4.3MB', under 1 MB -> '512KB'."""
     if num_bytes < 1024 * 1024:
         return f"{max(1, round(num_bytes / 1024))}KB"
     mb = round(num_bytes / (1024 * 1024), 1)
@@ -99,7 +89,6 @@ def fmt_size(num_bytes: int) -> str:
 
 
 def normalize_instagram_url(raw: str) -> str | None:
-    """Normalize a pasted Instagram URL and reject other hosts."""
     value = (raw or "").strip().rstrip(_TRAILING_PUNCTUATION)
     if not value:
         return None
@@ -117,7 +106,6 @@ def normalize_instagram_url(raw: str) -> str | None:
 
 
 def classify_instagram_url(raw: str) -> tuple[str, str] | None:
-    """Return (category, normalized_url) for supported Instagram URL forms."""
     url = normalize_instagram_url(raw)
     if not url:
         return None
@@ -157,7 +145,6 @@ def _nested(obj, *keys):
 
 
 def _find_url(node, keys: tuple[str, ...], depth: int = 0, seen: set[int] | None = None) -> str | None:
-    """Find a direct audio resource URL in the nested instagrapi media payload."""
     if node is None or depth > 8:
         return None
     if seen is None:
@@ -221,7 +208,6 @@ class AutoDownloadModule(BaseModule):
 
     @staticmethod
     def _paths(result, folder: Path) -> list[Path]:
-        """Normalize Path, list[Path], or directory results from instagrapi download helpers."""
         candidates = result if isinstance(result, (list, tuple, set)) else [result]
         paths: list[Path] = []
         for candidate in candidates:
@@ -236,7 +222,6 @@ class AutoDownloadModule(BaseModule):
             elif path.is_file():
                 paths.append(path)
         if not paths:
-            # Folder scan is only a fallback if a helper returned no paths.
             paths = sorted((p for p in folder.rglob("*") if p.is_file()), key=lambda path: path.name.lower())
         unique: list[Path] = []
         seen: set[str] = set()
@@ -245,12 +230,10 @@ class AutoDownloadModule(BaseModule):
             if identity not in seen:
                 seen.add(identity)
                 unique.append(path)
-        # Preserve album/highlight order returned by instagrapi.
         return unique
 
     @staticmethod
     def _highlight_pk(cl, url: str) -> str:
-        """Resolve canonical highlight URLs; follow Instagram /s/ share links if necessary."""
         try:
             return str(cl.highlight_pk_from_url(url))
         except Exception as original_error:
@@ -280,7 +263,6 @@ class AutoDownloadModule(BaseModule):
             raise ValueError("Too many redirects while resolving the Instagram highlight.")
         final_url = current_url
         if "/highlights/" not in urlparse(final_url).path:
-            # Some /s/ share URLs return an HTML page instead of a direct redirect.
             match = re.search(
                 r"https?://(?:www\.)?instagram\.com/stories/highlights/(\d+)/?",
                 response.text if response is not None else "",
@@ -294,7 +276,6 @@ class AutoDownloadModule(BaseModule):
 
     @staticmethod
     def _track_url(cl, media) -> str:
-        """Find an available original/track audio file from current Reel metadata."""
         keys = (
             "progressive_download_url",
             "fast_start_progressive_download_url",
@@ -329,7 +310,6 @@ class AutoDownloadModule(BaseModule):
 
     @staticmethod
     def _meta(media) -> dict:
-        """What the caption shows: text, likes, comments, author, date."""
         return {
             "caption": _value(media, "caption_text") or "",
             "likes": _value(media, "like_count"),
@@ -340,7 +320,6 @@ class AutoDownloadModule(BaseModule):
 
     @staticmethod
     def _clip(cl, media, pk: str, folder: Path):
-        """Download a Reel from the media info we already have (saves instagrapi a second lookup)."""
         video_url = _value(media, "video_url")
         by_url = getattr(cl, "clip_download_by_url", None)
         if video_url and by_url:
@@ -348,8 +327,6 @@ class AutoDownloadModule(BaseModule):
         return cl.clip_download(pk, folder=folder)
 
     def _download_sync(self, url: str, category: str, folder: Path) -> dict:
-        """A link you pasted is a one-off request, so skip the random pause instagrapi adds after every call
-        (meant for bulk scraping). It is only a few calls, not a loop."""
         cl = self.ctx.ig.cl
         saved = cl.delay_range
         cl.delay_range = None
@@ -359,7 +336,6 @@ class AutoDownloadModule(BaseModule):
             cl.delay_range = saved
 
     def _download_inner(self, url: str, category: str, folder: Path) -> dict:
-        """Perform network operations synchronously under InstagramClient's single-call lock."""
         cl = self.ctx.ig.cl
         if category == "reel":
             pk = str(cl.media_pk_from_url(url))
@@ -424,7 +400,6 @@ class AutoDownloadModule(BaseModule):
             mb = max(p.stat().st_size for p in too_big) / 1_000_000
             raise RuntimeError(f"The file is {mb:.0f} MB. Telegram bots can send at most 50 MB.")
         sent = 0
-        # Telegram media groups accept up to 10 photo/video items per message.
         for offset in range(0, len(paths), 10):
             group = paths[offset : offset + 10]
             if len(group) == 1:
@@ -449,7 +424,7 @@ class AutoDownloadModule(BaseModule):
             for index, path in enumerate(group):
                 suffix = path.suffix.lower()
                 data = path.read_bytes()
-                file_input = InputFile(data, filename=path.name, attach=True)  # attach=True is required inside an album
+                file_input = InputFile(data, filename=path.name, attach=True)
                 file_caption = caption if offset == 0 and index == 0 else None
                 if suffix in (".mp4", ".mov", ".m4v", ".webm", ".mkv"):
                     media.append(InputMediaVideo(media=file_input, caption=file_caption, parse_mode="HTML" if file_caption else None))
@@ -471,7 +446,6 @@ class AutoDownloadModule(BaseModule):
         return sent
 
     async def on_text(self, text: str, update) -> bool:
-        """Any message containing an Instagram link is downloaded. No command needed."""
         match = _LINK_RE.search(text or "")
         if not match:
             return False
@@ -482,7 +456,7 @@ class AutoDownloadModule(BaseModule):
             return True
         category, url = classified
         if category == "profile":
-            return False  # a profile link is handled by the profile module (modules/dump.py)
+            return False
         await self._run(update, url, category)
         return True
 
@@ -494,7 +468,7 @@ class AutoDownloadModule(BaseModule):
             await message.reply_text("Another download is still running in this chat. Please wait.")
             return
         self._busy.add(chat_id)
-        await set_reaction(bot, message, DONE_REACTION)  # instant: the 👍 shows the link was picked up
+        await set_reaction(bot, message, DONE_REACTION)
         try:
             with tempfile.TemporaryDirectory(prefix="hyperig-dl-") as temp:
                 folder = Path(temp)
@@ -506,30 +480,25 @@ class AutoDownloadModule(BaseModule):
                 caption = build_caption(result["kind"], url, total, result.get("meta"))
                 markup = None
                 if result["is_reel"] and len(paths) == 1 and self.ctx.prefs.get("dl_audio", True):
-                    # One message: the Reel itself carries the audio button.
                     markup = InlineKeyboardMarkup(
                         [[InlineKeyboardButton("Download original audio", callback_data=f"m:autodl:a:{result['pk']}")]]
                     )
                 await self._send_paths(bot, chat_id, paths, caption, markup=markup)
         except Exception as e:
             log.info("Instagram link download failed (%s: %s)", type(e).__name__, str(e)[:200])
-            await set_reaction(bot, message)  # nothing was delivered, so take the 👍 back off
+            await set_reaction(bot, message)
             await message.reply_text(self._explain(e))
         finally:
             self._busy.discard(chat_id)
 
     @staticmethod
     def _has_video_track(path: Path) -> bool:
-        """True if an MP4/M4A file has a video track (its 'hdlr' box says 'vide' instead of 'soun')."""
         try:
             return re.search(rb"hdlr.{8}vide", path.read_bytes(), re.S) is not None
         except OSError:
             return False
 
     def _as_audio(self, path: Path) -> Path:
-        """Instagram serves the sound as an .mp4 URL, which Telegram shows as a video/file. Return a real .m4a.
-        Uses ffmpeg when installed (also strips a video track); an audio-only MP4 is already M4A, so without
-        ffmpeg it is just renamed."""
         if path.suffix.lower() in AUDIO_EXTENSIONS:
             return path
         out = path.with_name("original_audio.m4a")

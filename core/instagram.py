@@ -1,9 +1,3 @@
-"""One user's Instagram connection. Login/session logic lives in core/auth.py.
-
-There is no inbox polling and no realtime connection: the client only talks to Instagram when a command,
-a pasted link or the watcher asks it to. Every call goes through one lock because instagrapi's Client is
-not thread-safe.
-"""
 import asyncio
 from dataclasses import replace
 
@@ -20,10 +14,9 @@ class InstagramClient:
         self.auth = AuthManager(cfg, store)
         self.logged_in = False
         self.last_alert = ""
-        self.on_alert = None            # async callable(text): tells the user about login prompts and problems
-        self._lock = asyncio.Lock()     # one instagrapi call at a time
+        self.on_alert = None
+        self._lock = asyncio.Lock()
 
-    # The instagrapi Client lives in the auth manager (it is rebuilt on a fresh login).
     @property
     def cl(self):
         return self.auth.cl
@@ -51,9 +44,7 @@ class InstagramClient:
     def _bind(self) -> None:
         self.auth.bind(asyncio.get_running_loop(), self._say)
 
-    # ------------------------------------------------------------------ connecting
     async def login_with_password(self, username: str, password: str, totp_secret: str | None = None) -> tuple[bool, str]:
-        """Log in with a password. The password is kept in memory only for this attempt. Never raises."""
         self._bind()
         await self.auth.forget_session()
         self._set_cfg(ig_username=username, ig_password=password, ig_totp_secret=totp_secret, ig_sessionid=None)
@@ -66,14 +57,13 @@ class InstagramClient:
             log.info("Password login failed (%s)", type(e).__name__)
             return False, info.text
         finally:
-            self._set_cfg(ig_password=None)  # never keep it
+            self._set_cfg(ig_password=None)
         self.logged_in = True
         self.last_alert = ""
         await self._save_session(force=True)
         return True, f"Connected as @{self.username} ({self.auth.login_method})."
 
     async def login_with_cookie(self, raw: str) -> tuple[bool, str]:
-        """Log in with a browser sessionid cookie. Never raises."""
         self._bind()
         try:
             sessionid = parse_cookie_input(raw)
@@ -99,7 +89,6 @@ class InstagramClient:
         return True, f"Connected as @{self.username} (cookie)."
 
     async def restore_saved_session(self) -> bool:
-        """Use the session saved earlier, without a new login. Returns False if there is none or it expired."""
         self._bind()
         session = await self.auth.load_session()
         if not (session or {}).get("authorization_data") and not (session or {}).get("cookies", {}).get("sessionid"):
@@ -125,8 +114,6 @@ class InstagramClient:
         return True
 
     async def logout(self) -> None:
-        """Forget the saved session. Nothing is done on Instagram's side: logging out there would also end the
-        session you are using in the app or browser."""
         self.logged_in = False
         self.auth.prompter.cancel()
         await self.auth.forget_session()

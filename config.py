@@ -1,8 +1,3 @@
-"""Configuration. Everything comes from environment variables (.env file supported).
-
-Only the bot itself is configured here. Instagram accounts are connected by each user inside the bot
-(password or cookie), so no Instagram credentials live in the environment.
-"""
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,43 +49,38 @@ def _tls_verify(name: str) -> bool | str:
         return True
     if raw.lower() in ("0", "false", "no", "off"):
         return False
-    return raw  # path to a CA bundle (e.g. for a proxy that re-signs TLS)
+    return raw
 
 
 @dataclass(frozen=True)
 class Config:
-    # ---- Telegram
     tg_token: str = ""
 
-    # ---- Instagram identity of the connected user. Filled in per user by the bot, never from the environment.
     ig_username: str = ""
-    ig_password: str | None = None      # only held in memory while logging in, never saved
+    ig_password: str | None = None
     ig_totp_secret: str | None = None
     ig_sessionid: str | None = None
     ig_phone_number: str | None = None
 
-    # ---- Instagram: network + device identity (applied only when a NEW device is created)
     ig_proxy: str | None = None
-    ig_locale: str | None = None        # e.g. en_US
-    ig_country: str | None = None       # e.g. US
-    ig_country_code: int | None = None  # calling code, e.g. 1
-    ig_timezone_offset: int | None = None  # seconds from UTC, e.g. 18000 for Pakistan
+    ig_locale: str | None = None
+    ig_country: str | None = None
+    ig_country_code: int | None = None
+    ig_timezone_offset: int | None = None
     ig_app_version: str | None = None
     ig_app_version_code: str | None = None
     ig_bloks_versioning_id: str | None = None
     ig_override_app_version: bool = False
     ig_legacy_login: bool = False
-    ig_cookie_upgrade: bool = False     # never: passwords are not kept, so there is nothing to upgrade with
-    ig_delay_range: tuple = (1.0, 3.0)  # random pause after each request, seconds
+    ig_cookie_upgrade: bool = False
+    ig_delay_range: tuple = (1.0, 3.0)
     ig_tls_verify: bool | str = True
 
-    # ---- Behaviour
-    max_media_mb: int = 50              # Telegram bots can upload up to 50 MB
-    code_timeout: int = 300             # seconds to wait for a 2FA / verification code
-    max_watch: int = 10                 # watched accounts per user
+    max_media_mb: int = 50
+    code_timeout: int = 300
+    max_watch: int = 10
 
-    # ---- Storage
-    mongo_uri: str | None = None        # if empty, JSON files in data_dir are used
+    mongo_uri: str | None = None
     mongo_db: str = "fetchig"
     data_dir: Path = Path("./data")
 

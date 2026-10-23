@@ -1,10 +1,3 @@
-"""Tiny async key-value store with two backends.
-
-Holds each user's saved Instagram session, settings and watchlist (keys are namespaced per Telegram user).
-
-* MongoStore  - used when MONGO_URI is set (survives redeploys / ephemeral disks)
-* FileStore   - default, JSON files under DATA_DIR (mount it as a volume in Docker)
-"""
 import asyncio
 import json
 import os
@@ -25,8 +18,6 @@ class Store:
 
 
 class ScopedStore(Store):
-    """Namespaces keys inside a parent user Store so one user DB can hold multiple Instagram accounts."""
-
     def __init__(self, parent: Store, prefix: str):
         self.parent = parent
         self.prefix = prefix
@@ -62,8 +53,8 @@ class FileStore(Store):
             return
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(value, indent=2, default=str), "utf-8")
-        os.chmod(tmp, 0o600)  # session data is as sensitive as a password
-        os.replace(tmp, path)  # atomic: never leaves a half-written session
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
 
     async def get(self, key, default=None):
         return await asyncio.to_thread(self._read, key, default)
@@ -79,7 +70,7 @@ class MongoStore(Store):
         self.client = MongoClient(uri, serverSelectionTimeoutMS=10000)
         self.db = self.client[db_name]
         self.col = self.db[collection_name]
-        self.client.admin.command("ping")  # fail fast on a bad URI
+        self.client.admin.command("ping")
         log.info("Connected to MongoDB (%s/%s)", db_name, collection_name)
 
     def _read(self, key, default):
@@ -90,7 +81,6 @@ class MongoStore(Store):
         if value is None:
             self.col.delete_one({"_id": key})
             return
-        # Stored as a JSON string: session settings contain arbitrary keys that Mongo field names may reject.
         self.col.replace_one({"_id": key}, {"_id": key, "json": json.dumps(value, default=str)}, upsert=True)
 
     async def get(self, key, default=None):

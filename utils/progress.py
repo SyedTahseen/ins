@@ -1,18 +1,10 @@
-"""One plain progress message that is edited in place while a job runs, then left in the chat as the result.
-
-    Downloading reel
-    @nasa
-
-    [#####-----]  50%
-    Fetching media
-"""
 import html
 import time
 
 from telegram.error import TelegramError
 
 BAR = 10
-MIN_GAP = 1.8   # seconds between edits (Telegram rate limits message edits)
+MIN_GAP = 1.8
 
 
 def bar(fraction: float) -> str:
@@ -59,12 +51,10 @@ class Progress:
             pass
 
     async def set(self, step: str, fraction: float | None = None, count: str = "") -> None:
-        """Show a step with an optional bar, or a plain count (for jobs whose size is not known up front)."""
         await self._push(self._render(self.title, self.subject, step, fraction, count))
 
     async def done(self, summary: str) -> None:
         await self._push(f"<b>Done</b>\n{html.escape(summary)}", force=True)
 
     async def fail(self, reason: str) -> None:
-        """`reason` is plain text or already-safe HTML-free text."""
         await self._push(f"<b>Failed</b>\n{html.escape(reason)}", force=True)

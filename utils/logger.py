@@ -7,7 +7,6 @@ def setup_logging(level: str = "INFO") -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    # httpx logs full request URLs at INFO, and Telegram URLs contain the bot token.
     for noisy in ("httpx", "httpcore", "telegram.ext.Updater"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     if level != "DEBUG":

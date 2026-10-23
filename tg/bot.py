@@ -1,8 +1,3 @@
-"""Fetch IG: a Telegram bot where every user connects their own Instagram account.
-
-Each Telegram user gets a private session (own Instagram client, own saved login, own settings, own watchlist),
-so nobody ever acts through someone else's account. Only private chats are served.
-"""
 import asyncio
 import re
 
@@ -39,8 +34,6 @@ def btn(label: str, data: str) -> InlineKeyboardButton:
 
 
 class UserSession:
-    """Everything that belongs to one Telegram user."""
-
     def __init__(self, bot_app: "FetchIGBot", user_id: int):
         self.user_id = user_id
         cfg = bot_app.cfg
@@ -52,7 +45,7 @@ class UserSession:
         self.modules = ModuleManager(self.ctx)
         self.ctx.modules = self.modules
         self.modules.load_modules()
-        self.awaiting: dict | None = None   # connect flow: {"step": "cookie" | "username" | "password", ...}
+        self.awaiting: dict | None = None
         self.started = False
         self.login_task: asyncio.Task | None = None
         self.ig.on_alert = self._tell
@@ -83,7 +76,6 @@ class FetchIGBot:
         self.app: Application | None = None
         self._lock = asyncio.Lock()
 
-    # ------------------------------------------------------------------ lifecycle
     def build(self) -> Application:
         self.app = (
             Application.builder().token(self.cfg.tg_token).concurrent_updates(True)
@@ -132,20 +124,17 @@ class FetchIGBot:
                     await self.root_store.set(USERS_KEY, users + [user_id])
             return sess
 
-    # ------------------------------------------------------------------ helpers
     @staticmethod
     def _private(update: Update) -> bool:
         chat = update.effective_chat
         return bool(chat and chat.type == "private" and update.effective_user)
 
     async def _forget_message(self, update: Update) -> None:
-        """Remove the user's own message when it held a password or cookie."""
         try:
             await update.effective_message.delete()
         except TelegramError:
             pass
 
-    # ------------------------------------------------------------------ commands
     async def on_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._private(update):
             return
@@ -185,23 +174,21 @@ class FetchIGBot:
                 log.exception("Command /%s failed", name)
                 await message.reply_text("Something went wrong. Try again in a moment.")
 
-    # ------------------------------------------------------------------ plain text
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._private(update):
             return
         text = (update.effective_message.text or "").strip()
         sess = await self.session(update.effective_user.id)
 
-        if sess.ig.auth.prompter.waiting:                      # a login is waiting for its verification code
+        if sess.ig.auth.prompter.waiting:
             if sess.ig.auth.prompter.submit(text):
                 await self._forget_message(update)
             return
         if sess.awaiting:
             await self.connect_step(sess, update, text)
             return
-        await sess.modules.handle_text(text, update)  # the link downloader picks up pasted Instagram links here
+        await sess.modules.handle_text(text, update)
 
-    # ------------------------------------------------------------------ connecting
     async def connect_menu(self, sess: UserSession, message) -> None:
         if sess.login_task and not sess.login_task.done():
             await message.reply_text("A login is already in progress.")
@@ -257,7 +244,6 @@ class FetchIGBot:
 
         sess.login_task = asyncio.create_task(job())
 
-    # ------------------------------------------------------------------ settings
     def settings_view(self, sess: UserSession) -> tuple[str, InlineKeyboardMarkup]:
         ig, prefs = sess.ig, sess.prefs
         pace = prefs.get("pace")
@@ -304,7 +290,6 @@ class FetchIGBot:
         except TelegramError:
             pass
 
-    # ------------------------------------------------------------------ buttons
     async def on_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         if not query or not query.message or query.message.chat.type != "private":
@@ -376,7 +361,6 @@ class FetchIGBot:
             await self._show(query, "Send your Instagram username. Send cancel to stop.", None)
 
     async def wipe(self, sess: UserSession) -> None:
-        """Disconnect and delete everything stored for this user."""
         if sess.login_task and not sess.login_task.done():
             sess.login_task.cancel()
         sess.awaiting = None

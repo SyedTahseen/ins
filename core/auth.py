@@ -1,21 +1,3 @@
-"""Everything about logging in and keeping the Instagram session alive.
-
-This follows instagrapi's own documentation (Best Practices, Login Migration, Challenge
-Resolver, Handle Exceptions, TOTP):
-
-* Log in ONCE, persist the settings (device identity + auth + cookies), and always reload them.
-  login() validates a saved session and only does a real password login when Instagram rejects it,
-  reusing the same device identity.
-* The device identity is saved even when a fresh login fails, so the next try is the same "phone"
-  instead of yet another new device.
-* Locale / country / timezone / app version are applied only when a NEW device is created. They
-  are never changed on an existing session (consistency matters more than anything).
-* Verification codes (SMS, email, 2FA, backup codes) are asked for on Telegram: the bot messages
-  you, you reply /code 123456. The login thread blocks until you answer or the timeout passes.
-* handle_exception follows the documented policy: relogin once on LoginRequired (never in a
-  loop), resolve resolvable challenges, stop and tell you about manual ones.
-* Old saved sessions without a Bloks hash are upgraded automatically (override_app_version).
-"""
 import asyncio
 import concurrent.futures
 import hashlib
@@ -56,18 +38,14 @@ from utils.logger import get_logger
 
 log = get_logger("auth")
 
-RELOGIN_COOLDOWN = 600  # never auto-relogin twice within 10 minutes (prevents login loops)
+RELOGIN_COOLDOWN = 600
 
 
-# --------------------------------------------------------------------------- cookie input
 class CookieError(Exception):
-    """A cookie problem. The message is written for you and shown on Telegram."""
+    pass
 
 
 def parse_cookie_input(raw: str) -> str:
-    """Find the Instagram sessionid in whatever you pasted: a bare sessionid, a 'sessionid=...; ...'
-    cookie string, or a JSON cookie export (Cookie-Editor / EditThisCookie list, or an object).
-    Returns it exactly as pasted (URL-encoded or not). Raises CookieError with advice."""
     text = (raw or "").strip().strip("`'\"")
     value = None
     if text[:1] in "[{":
@@ -88,7 +66,6 @@ def parse_cookie_input(raw: str) -> str:
         value = match.group(1) if match else text
     sid = str(value or "").strip().strip("\"'")
     decoded = unquote(sid)
-    # instagrapi needs: longer than 30 characters, starting with the numeric user id
     if len(decoded) <= 30 or not re.match(r"^\d+:\S+$", decoded):
         raise CookieError(
             "I couldn't find a valid sessionid in that. It looks like 123456789:AbCd...:27:AYx... "
@@ -98,16 +75,11 @@ def parse_cookie_input(raw: str) -> str:
 
 
 def sessionid_candidates(sid: str) -> list[str]:
-    """Browsers store the value URL-encoded (%3A) but the mobile API uses colons. Try the pasted form
-    first, then the other one, so either way of copying works."""
     other = unquote(sid) if "%" in sid else quote(sid, safe="")
     return [sid] if other == sid else [sid, other]
 
 
-# --------------------------------------------------------------------------- codes via Telegram
 class CodePrompter:
-    """Lets a blocking login thread ask you for a code on Telegram or the Web UI and wait for the answer."""
-
     def __init__(self, timeout: int):
         self.timeout = timeout
         self.hint: str = ""
@@ -125,7 +97,6 @@ class CodePrompter:
             return self._pending is not None and not self._pending.done()
 
     def ask(self, hint: str) -> str:
-        """Blocking. Call from a worker thread. Returns "" on timeout."""
         fut: concurrent.futures.Future = concurrent.futures.Future()
         with self._lock:
             self._pending = fut
@@ -165,16 +136,14 @@ class CodePrompter:
         self._resolve("")
 
 
-# --------------------------------------------------------------------------- error explanations
 @dataclass
 class ErrorInfo:
-    kind: str          # password | 2fa | challenge | feedback | throttle | network | session | other
-    text: str          # message for you
-    needs_you: bool    # True = automation should stop until you act
+    kind: str
+    text: str
+    needs_you: bool
 
 
 def describe_error(e: Exception, cl=None) -> ErrorInfo:
-    """Turn any instagrapi exception into advice. Order matters (subclasses first)."""
     detail = str(e)[:300]
     if isinstance(e, ReloginAttemptExceeded):
         return ErrorInfo("password", "Too many re-login attempts. Open the Instagram app, make sure the account is fine, then send /relogin.", True)
@@ -232,12 +201,10 @@ _NOT_FOUND_NAMES = {
 
 
 def _is_not_found(e: Exception) -> bool:
-    """Instagram's 'nothing here' answers: a bad shortcode comes back as a GraphQL 'Query Error', not a clean 404."""
     return any(cls.__name__ in _NOT_FOUND_NAMES for cls in type(e).__mro__)
 
 
 def _needs_app_migration(e: Exception) -> bool:
-    """Recognize both missing-Bloks migrations and Instagram's explicit needs_upgrade response."""
     s = str(e).lower()
     error_type = str(getattr(e, "error_type", "") or "").strip().lower()
     return (
@@ -256,7 +223,6 @@ def _mask_proxy(proxy: str | None) -> str:
     return f"{p.scheme}://{p.hostname}:{p.port}" if p.hostname else "set"
 
 
-# --------------------------------------------------------------------------- the manager
 class AuthManager:
     SESSION = "session"
     META = "session_meta"
@@ -266,19 +232,17 @@ class AuthManager:
         self.store = store
         self.client_factory = client_factory
         self.prompter = CodePrompter(cfg.code_timeout)
-        self.login_method = "none"        # session | password | sessionid | cookie
-        self.upgrade_note = ""            # why the password upgrade after /cookie did not happen
+        self.login_method = "none"
+        self.upgrade_note = ""
         self._loop = None
         self._notify = None
         self._in_login = False
-        self._last_relogin = float("-inf")  # monotonic() counts from boot, so 0.0 would block a fresh container
+        self._last_relogin = float("-inf")
         self._saved_hash: str | None = None
         self._custom_profile = False
         self.cl = self._build_client(None)
 
-    # ------------------------------------------------------------- wiring
     def bind(self, loop, notify) -> None:
-        """notify: async callable(text) that posts to Telegram."""
         self._loop, self._notify = loop, notify
         self.prompter.bind(loop, notify)
 
@@ -286,7 +250,6 @@ class AuthManager:
         if self._loop and self._notify:
             asyncio.run_coroutine_threadsafe(self._notify(text), self._loop)
 
-    # ------------------------------------------------------------- client construction
     def _build_client(self, session: dict | None):
         cfg = self.cfg
         cl = self.client_factory(
@@ -298,11 +261,8 @@ class AuthManager:
         )
         self._custom_profile = False
         if cfg.ig_app_version and not (session or {}).get("authorization_data"):
-            # A logged-in saved session keeps the app version it was created with. Anything else
-            # (new device, or a device identity left behind by a failed login) uses the configured one.
             self._apply_app_profile(cl)
         if not session:
-            # Brand-new device: apply the identity you configured. Never done for saved sessions.
             if cfg.ig_locale:
                 cl.set_locale(cfg.ig_locale)
             if cfg.ig_country:
@@ -312,7 +272,7 @@ class AuthManager:
             if cfg.ig_timezone_offset is not None:
                 cl.set_timezone_offset(cfg.ig_timezone_offset)
         if cfg.ig_phone_number:
-            cl.phone_number = cfg.ig_phone_number  # for "confirm your phone" challenges
+            cl.phone_number = cfg.ig_phone_number
         cl.challenge_code_handler = self._challenge_code_handler
         cl.change_password_handler = self._change_password_handler
         cl.handle_exception = self._handle_exception
@@ -320,9 +280,6 @@ class AuthManager:
         return cl
 
     def _apply_app_profile(self, cl) -> None:
-        """Present as IG_APP_VERSION. A version instagrapi ships is used as is; any other version is built
-        from IG_APP_VERSION_CODE / IG_BLOKS_VERSIONING_ID. Without a Bloks hash the CAA login cannot work,
-        so the legacy login flow is used instead (see _attempt_login)."""
         cfg = self.cfg
         try:
             cl.set_app(cfg.ig_app_version)
@@ -335,14 +292,12 @@ class AuthManager:
         if cfg.ig_bloks_versioning_id:
             profile["bloks_versioning_id"] = cfg.ig_bloks_versioning_id
         cl.set_app(profile)
-        cl.set_user_agent()  # rebuild the User-Agent so it names the new version
+        cl.set_user_agent()
         self._custom_profile = True
         if not cfg.ig_app_version_code:
             log.warning("IG_APP_VERSION=%s has no IG_APP_VERSION_CODE; the version code of the default profile is used", cfg.ig_app_version)
 
-    # ------------------------------------------------------------- handlers (run in worker thread)
     def _challenge_code_handler(self, username, choice):
-        # Must BLOCK until the code is known: returning "" on the first call aborts the flow.
         via = {ChallengeChoice.SMS: "SMS", ChallengeChoice.EMAIL: "email"}.get(choice, str(choice))
         return self.prompter.ask(f"Instagram sent a verification code to @{username} by {via}.")
 
@@ -355,8 +310,6 @@ class AuthManager:
         raise ChallengeRequired(msg)
 
     def _handle_exception(self, client, e):
-        """instagrapi calls this on any private-API error. Returning normally = retry the request
-        once; raising = give up. Mirrors the documented policy."""
         if isinstance(e, BadPassword):
             log.warning("bad_password from Instagram: %s", e)
             if client.relogin_attempt > 0:
@@ -364,7 +317,7 @@ class AuthManager:
             raise e
         if isinstance(e, (LoginRequired, ClientLoginRequired)):
             if self._in_login or not self.cfg.ig_password:
-                raise e  # login() handles this itself
+                raise e
             if time.monotonic() - self._last_relogin < RELOGIN_COOLDOWN:
                 log.warning("Session rejected again within %ss of a re-login, giving up", RELOGIN_COOLDOWN)
                 raise e
@@ -376,7 +329,7 @@ class AuthManager:
             if api_path == "/challenge/":
                 log.warning("Generic challenge flow needs manual handling")
                 raise e
-            client.challenge_resolve(client.last_json)  # uses the Telegram code handler; raises if it can't
+            client.challenge_resolve(client.last_json)
             return
         if isinstance(e, FeedbackRequired):
             log.warning("feedback_required: %s", (client.last_json or {}).get("feedback_message", ""))
@@ -386,12 +339,10 @@ class AuthManager:
             log.warning("Instagram says: please wait a few minutes (%s)", e)
         raise e
 
-    # ------------------------------------------------------------- login (all of these block)
     def _totp(self, cl) -> str:
         return cl.totp_generate_code(self.cfg.ig_totp_secret) if self.cfg.ig_totp_secret else ""
 
     def _caa_login(self, cl, username: str, password: str, relogin: bool = False, verification_code: str = "") -> bool:
-        """Run Android CAA login without falling back to the retired /api/v1/accounts/login/ endpoint."""
         cl.username = (username or "").strip()
         cl.password = password
         if not cl.username or not cl.password:
@@ -448,7 +399,6 @@ class AuthManager:
         try:
             login(cfg.ig_username, cfg.ig_password, relogin=relogin, verification_code=code)
         except TwoFactorRequired:
-            # Not covered by IG_TOTP_SECRET: ask for the SMS / authenticator / backup code on Telegram.
             code = self.prompter.ask("Instagram needs your 2FA code (authenticator app, SMS or 8-digit backup code).")
             if not code:
                 raise
@@ -467,7 +417,6 @@ class AuthManager:
             )
             if not _needs_app_migration(e) or already_current:
                 raise
-            # Older saved session without a Bloks hash: upgrade the app profile, keep device + cookies.
             log.warning("Instagram rejected the old app profile (%s); retrying once with %s", current_ver, DEFAULT_APP_VERSION)
             cl.override_app_version = True
             cl.set_settings(cl.get_settings())
@@ -486,7 +435,6 @@ class AuthManager:
             self._in_login = False
 
     def login_sync(self, session: dict | None) -> str:
-        """Build a client from the saved session (if any) and log in. Returns how it logged in."""
         self._in_login = True
         try:
             cl = self._build_client(session)
@@ -499,7 +447,7 @@ class AuthManager:
                     return self.login_method
                 except Exception as e:
                     log.warning("sessionid login failed (%s), falling back to password", type(e).__name__)
-                    cl = self._build_client(session)  # clean client, same device identity
+                    cl = self._build_client(session)
             self._password_login(cl)
             self.login_method = "session" if has_auth else "password"
             return self.login_method
@@ -508,17 +456,11 @@ class AuthManager:
 
 
     def _check_cookie_account(self, cl) -> None:
-        """login_by_sessionid fetches the account's own profile, so cl.username is who the cookie is for.
-        Never run as the wrong account."""
         owner = (getattr(cl, "username", None) or "").lower()
         if owner and self.cfg.ig_username and owner != self.cfg.ig_username.lower():
             raise CookieError(f"That cookie belongs to @{owner}, but IG_USERNAME is @{self.cfg.ig_username}. Not logging in.")
 
     def cookie_login_sync(self, sessionid: str, upgrade: bool, session: dict | None) -> str:
-        """Log in with a browser sessionid (sent via /cookie). Keeps the stored device identity but drops
-        stale tokens. If `upgrade`, then also try a password login from this machine on top of it and
-        quietly stay on the cookie session if that fails. No server-side logout is ever done (it would
-        destroy the only working session). A failure puts the previous client back. Returns the method."""
         previous = self.cl
         self._in_login = True
         try:
@@ -547,23 +489,21 @@ class AuthManager:
                 except Exception as e:
                     log.warning("Password login on top of the cookie failed (%s), keeping the cookie session", type(e).__name__)
                     self.upgrade_note = describe_error(e, cl).text
-                    self._build_client(cookie_settings)  # restore the working cookie session
+                    self._build_client(cookie_settings)
                     self.login_method = "cookie"
             return self.login_method
         except Exception:
-            self.cl = previous  # a bad cookie must never replace the client we already had
+            self.cl = previous
             raise
         finally:
             self._in_login = False
 
     def relogin_sync(self) -> None:
-        """Forced fresh login that keeps the device identity (used by /relogin)."""
         self._relogin_core(self.cl)
 
     def logout_sync(self) -> None:
         self.cl.logout()
 
-    # ------------------------------------------------------------- persistence
     async def load_session(self) -> dict | None:
         data = await self.store.get(self.SESSION)
         if not isinstance(data, dict) or "uuids" not in data:
@@ -576,8 +516,6 @@ class AuthManager:
         return data
 
     async def save_session(self, settings: dict, force: bool = False) -> None:
-        """Persist settings. A logged-out device identity is saved only when nothing better exists,
-        so a failed login can never overwrite a working session."""
         authed = bool(settings.get("authorization_data"))
         if not authed and await self.store.get(self.SESSION):
             return
@@ -596,9 +534,7 @@ class AuthManager:
         await self.store.set(self.META, None)
         self._saved_hash = None
 
-    # ------------------------------------------------------------- introspection
     def info(self) -> str:
-        """Safe summary for /session. Never includes the password, sessionid or proxy credentials."""
         cl = self.cl
         try:
             device = getattr(cl, "device_settings", {}) or {}
@@ -619,5 +555,5 @@ class AuthManager:
                     f"Private requests this run: {getattr(cl, 'private_requests_count', '?')}",
                 ]
             )
-        except Exception as e:  # never let a diagnostics command crash
+        except Exception as e:
             return f"Could not read session info: {type(e).__name__}"

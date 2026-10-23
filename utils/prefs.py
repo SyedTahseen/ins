@@ -1,8 +1,3 @@
-"""Per-account preferences (feature switches, pacing, notifications, downloads).
-
-Saved in the Instagram account's own store under "prefs", so every account keeps its own settings and they
-survive restarts. The Settings panel in Telegram edits them; modules read them through ctx.prefs.
-"""
 from copy import deepcopy
 from typing import Any
 
@@ -13,9 +8,9 @@ log = get_logger("prefs")
 PACES = ("safe", "normal", "fast")
 
 DEFAULTS: dict[str, Any] = {
-    "features": {},          # module name -> bool; a missing name means ON
-    "pace": "normal",        # safe | normal | fast: how gently the watcher talks to Instagram (no screen; default is fine)
-    "dl_audio": True,        # offer "download original audio" under downloaded Reels
+    "features": {},
+    "pace": "normal",
+    "dl_audio": True,
 }
 
 
@@ -48,7 +43,6 @@ class Prefs:
         self.data[key] = value
         await self._save()
 
-    # ---- feature switches
     def feature_on(self, name: str) -> bool:
         return bool(self.data["features"].get(name, True))
 

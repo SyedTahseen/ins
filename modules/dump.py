@@ -1,15 +1,3 @@
-"""Public-profile tools for Telegram.
-
-Send a username (x.tahseen), @username or an instagram.com/username link and you get a profile card with a
-button menu (posts, reels, stories, highlights, followers and following lists, JSON). Plain commands (/profile,
-/pfp, /posts, /reels, /stories, /highlights) do the same things without the menu.
-
-Rules this module keeps:
-* PUBLIC accounts only. A private account gets its public card and nothing else.
-* No contact details (phone, e-mail, street address, coordinates) are ever shown or exported.
-* One job per chat at a time, and a short pause between items, so the logged-in Instagram account
-  is not hammered (instagrapi Best Practices: moderate pace, no bursts).
-"""
 import asyncio
 import io
 import json
@@ -35,10 +23,9 @@ RESERVED = {"p", "reel", "reels", "stories", "explore", "tv", "accounts", "direc
 
 POSTS_DEFAULT, POSTS_MAX = 5, 50
 REELS_DEFAULT, REELS_MAX = 3, 30
-LIST_DEFAULT, LIST_MAX = 200, 2000   # followers / following list size
+LIST_DEFAULT, LIST_MAX = 200, 2000
 HIGHLIGHT_BUTTONS = 20
 PREFIX = "dump"
-# Everyday one-word messages that look like a username but are not meant as one.
 NOT_USERNAMES = {
     "hi", "hii", "hello", "hey", "yo", "thanks", "thank", "thx", "ty", "ok", "okay", "yes", "no", "yep", "nope",
     "test", "start", "help", "stop", "cancel", "bye", "lol", "wow", "nice", "good", "cool", "done", "sure",
@@ -46,7 +33,6 @@ NOT_USERNAMES = {
 
 
 def parse_target(raw: str) -> str | None:
-    """'@name', 'name' or an instagram.com/name link -> 'name' (or None if it is not a username)."""
     raw = (raw or "").strip().lstrip("@")
     match = URL_RE.match(raw)
     if match:
@@ -67,12 +53,11 @@ class DumpModule(BaseModule):
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        self._busy: set[int] = set()          # chats with a job running
-        self._private: dict[str, bool] = {}    # username -> is_private, so "Back" needs no new request
-        self._awaiting: dict[int, tuple[str, str]] = {}   # chat id -> (action, username) waiting for a typed number
-        self._fmt: dict[int, str] = {}         # chat id -> "txt" | "json" for followers / following lists
+        self._busy: set[int] = set()
+        self._private: dict[str, bool] = {}
+        self._awaiting: dict[int, tuple[str, str]] = {}
+        self._fmt: dict[int, str] = {}
 
-    # ------------------------------------------------------------------ registration
     def get_commands(self):
         return {
             "profile": Command(self.cmd_profile, "Public profile info", "/profile <username or link>", takes_update=True),
@@ -88,13 +73,11 @@ class DumpModule(BaseModule):
     def get_callbacks(self):
         return {PREFIX: self.on_button}
 
-    # ------------------------------------------------------------------ instagram helpers
     def _need_login(self) -> None:
         if not self.ctx.ig.logged_in:
             raise RuntimeError("Instagram is not connected. Use /connect.")
 
     async def _ig(self, fn):
-        """Run a blocking instagrapi call under the client's lock. fn is a no-argument callable."""
         self._need_login()
         return await self.ctx.ig._call(fn)
 
@@ -126,7 +109,6 @@ class DumpModule(BaseModule):
         except Exception:
             return f"{type(e).__name__}: {e}"
 
-    # ------------------------------------------------------------------ text builders
     @staticmethod
     def _card(u, detailed: bool = False) -> str:
         badges = ("✅" if u.is_verified else "") + ("🔒" if u.is_private else "")
@@ -179,7 +161,6 @@ class DumpModule(BaseModule):
         rows.append([_btn("Back", "bk", username)])
         return InlineKeyboardMarkup(rows)
 
-    # ------------------------------------------------------------------ telegram helpers
     @staticmethod
     async def _edit(message, text: str, markup=None) -> None:
         try:
@@ -194,7 +175,6 @@ class DumpModule(BaseModule):
             log.info("Could not download media (%s)", e)
             return None
 
-    # ------------------------------------------------------------------ media helpers
     @staticmethod
     def _post_meta(m) -> dict:
         return {
@@ -208,13 +188,11 @@ class DumpModule(BaseModule):
             "views": m.view_count or m.play_count,
         }
 
-    # ------------------------------------------------------------------ the jobs
     TITLES = {"p": "Downloading posts", "r": "Downloading reels", "st": "Downloading stories", "h": "Downloading highlight",
               "pp": "Fetching profile picture", "js": "Exporting profile", "lf": "Collecting followers", "lg": "Collecting following"}
 
     async def _run(self, bot, chat_id: int, act: str, username: str, n: int = 0, hl_pk: str = "") -> None:
-        """Run one action. Never raises: problems are reported in the chat."""
-        if act == "hl":  # just a list of buttons, no downloading
+        if act == "hl":
             await self._show_highlights(bot, chat_id, username)
             return
         if chat_id in self._busy:
@@ -236,7 +214,6 @@ class DumpModule(BaseModule):
             self._busy.discard(chat_id)
 
     async def _job(self, bot, chat_id, status, act, username, n, hl_pk) -> tuple[int, int]:
-        """Returns (items sent, items attempted); (0, 0) for jobs without a count."""
         if act == "pp":
             user = await self._profile(username)
             url = str(user.profile_pic_url_hd or user.profile_pic_url or "")
@@ -270,7 +247,7 @@ class DumpModule(BaseModule):
             await bot.send_document(chat_id, document=InputFile(io.BytesIO(raw), filename=f"{username}_profile.json"))
             return 0, 0
 
-        user = await self._public_profile(username)  # everything below needs a public account
+        user = await self._public_profile(username)
         pk = str(user.pk)
 
         if act in ("lf", "lg"):
@@ -302,7 +279,6 @@ class DumpModule(BaseModule):
         raise RuntimeError("Unknown action.")
 
     async def _send_list(self, bot, chat_id, status, user, followers: bool, n: int) -> tuple[int, int]:
-        """Followers / following of a public account as a txt or json file: id, username and display name only."""
         n = max(1, min(n or LIST_DEFAULT, LIST_MAX))
         word = "followers" if followers else "following"
         total = user.follower_count if followers else user.following_count
@@ -334,7 +310,7 @@ class DumpModule(BaseModule):
             if items and await send_items(bot, chat_id, items, caption_of(m, kind), self._fetch):
                 sent += 1
             if i != len(medias):
-                await asyncio.sleep(random.uniform(0.8, 1.8))  # gentle pace, for Instagram and Telegram
+                await asyncio.sleep(random.uniform(0.8, 1.8))
         return sent, len(medias)
 
     async def _show_highlights(self, bot, chat_id: int, username: str) -> None:
@@ -361,7 +337,6 @@ class DumpModule(BaseModule):
             reply_markup=InlineKeyboardMarkup(rows),
         )
 
-    # ------------------------------------------------------------------ commands
     async def _target(self, args, update, usage: str) -> str | None:
         username = parse_target(args[0]) if args else None
         if not username:
@@ -369,7 +344,6 @@ class DumpModule(BaseModule):
         return username
 
     async def _card_message(self, update, username: str, detailed: bool, with_menu: bool) -> bool:
-        """Send the profile card. True if it was sent, False if an error message was sent instead."""
         message = update.effective_message
         try:
             user = await self._profile(username)
@@ -442,7 +416,6 @@ class DumpModule(BaseModule):
     async def cmd_highlights(self, args, update):
         await self._simple(args, update, "/highlights <username>", "hl")
 
-    # ------------------------------------------------------------------ buttons
     async def on_button(self, rest: str, query, context) -> None:
         act, _, arg = rest.partition(":")
         bot, chat_id = context.bot, query.message.chat_id
@@ -453,7 +426,7 @@ class DumpModule(BaseModule):
                 await self._run(bot, chat_id, "h", username, hl_pk=hl_pk)
             return
 
-        if act == "cu":  # "Type a number"
+        if act == "cu":
             kind, _, who = arg.partition(":")
             if kind in ("p", "r", "lf", "lg") and USERNAME_RE.match(who):
                 self._awaiting[chat_id] = (kind, who)
@@ -504,7 +477,6 @@ class DumpModule(BaseModule):
         elif act in ("pp", "st", "hl", "js"):
             await self._run(bot, chat_id, act, username)
 
-    # ------------------------------------------------------------------ typed number
     def is_awaiting(self, chat_id: int) -> bool:
         return chat_id in self._awaiting
 
@@ -512,14 +484,13 @@ class DumpModule(BaseModule):
         message = update.effective_message
         wanted = self._awaiting.pop(message.chat_id, None)
         if not wanted:
-            # Nothing was asked for, so a lone username or profile link opens that profile.
             name = await self._username_in(text)
             if not name:
                 return False
             bot = update.get_bot()
-            await set_reaction(bot, message, DONE_REACTION)  # instant
+            await set_reaction(bot, message, DONE_REACTION)
             if not await self._card_message(update, name, detailed=True, with_menu=True):
-                await set_reaction(bot, message)  # the error went out as a message, so take the 👍 back off
+                await set_reaction(bot, message)
             return True
         kind, username = wanted
         word = text.strip().lower()
@@ -535,14 +506,13 @@ class DumpModule(BaseModule):
         return True
 
     async def _username_in(self, text: str) -> str | None:
-        """A message that is just a username / @username / profile link (or has a profile link in it)."""
         tokens = (text or "").split()
         if len(tokens) == 1:
             token = tokens[0]
             if token.lower().lstrip("@") in NOT_USERNAMES:
                 return None
             return parse_target(token)
-        for token in tokens:  # a sentence: only a real link counts, never a loose word
+        for token in tokens:
             if token.lower().startswith(("http://", "https://")):
                 name = parse_target(token)
                 if name:

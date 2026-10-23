@@ -1,5 +1,3 @@
-"""Helpers shared by the profile modules (dump, watcher): HTML escaping, picking the files out of an
-Instagram post / reel / story, and sending them to Telegram as a single file or an album."""
 import asyncio
 import html
 from datetime import timezone
@@ -32,12 +30,10 @@ def num(value) -> str:
 
 
 DONE_REACTION = "👍"
-_REJECTED_REACTIONS: set[str] = set()   # emoji Telegram refused for bots, so we stop asking
+_REJECTED_REACTIONS: set[str] = set()
 
 
 async def set_reaction(bot, message, *emojis: str) -> None:
-    """React to a user's message with the first emoji Telegram accepts. With no emoji, the reaction is removed.
-    Never raises: reactions are decoration, so an old client or library just skips them."""
     try:
         if not emojis:
             await bot.set_message_reaction(message.chat_id, message.message_id, reaction=[])
@@ -56,7 +52,6 @@ async def set_reaction(bot, message, *emojis: str) -> None:
 
 
 async def tg_call(call):
-    """Run a Telegram call, waiting out flood limits (up to 3 tries)."""
     for _ in range(2):
         try:
             return await call()
@@ -67,7 +62,6 @@ async def tg_call(call):
 
 
 def items_of(m) -> list[tuple[str, str]]:
-    """(kind, url) for every file of a post / reel / story."""
     out: list[tuple[str, str]] = []
     resources = getattr(m, "resources", None)
     if m.media_type == 8 and resources:
@@ -84,7 +78,6 @@ def items_of(m) -> list[tuple[str, str]]:
 
 
 def caption_of(m, kind: str) -> str:
-    """HTML caption for a post / reel / story (kind is "post", "reel" or "story")."""
     when = m.taken_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if m.taken_at else ""
     if kind == "story":
         return f"📖 Story · {when}"
@@ -119,8 +112,6 @@ async def send_one(bot, chat_id: int, kind: str, data: bytes, caption: str, repl
 
 
 async def send_items(bot, chat_id: int, items: list[tuple[str, str]], caption: str, fetch: Fetch) -> int:
-    """Send one post/story: a single file, or an album (Telegram allows 10 per album).
-    fetch(url) returns the file's bytes, or None when it could not be downloaded. Returns files sent."""
     files: list[tuple[str, bytes]] = []
     for kind, url in items[:10]:
         data = await fetch(url)
