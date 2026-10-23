@@ -19,7 +19,6 @@ from utils.prefs import PACES, Prefs
 
 log = get_logger("bot")
 
-LINK_RE = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/\S+", re.I)
 USERS_KEY = "users"
 WIPE_KEYS = ("session", "session_meta", "prefs", "watchlist")
 
@@ -99,7 +98,6 @@ class FetchIGBot:
         await app.bot.set_my_commands([
             BotCommand("start", "Start Fetch IG "),
             BotCommand("status", "Status"),
-            BotCommand("dl", "Download an Instagram link"),
             BotCommand("dump", "Profile tools"),
             BotCommand("watch", "Watch an account"),
             BotCommand("watchlist", "Manage watched accounts"),
@@ -203,13 +201,7 @@ class FetchIGBot:
         if sess.awaiting:
             await self.connect_step(sess, update, text)
             return
-        if await sess.modules.handle_text(text, update):
-            return
-        match = LINK_RE.search(text)
-        if match:
-            found = sess.modules.all_commands().get("dl")
-            if found and sess.modules.is_enabled(found[1]):
-                await found[0].handler([match.group(0).rstrip(".,)")], update)
+        await sess.modules.handle_text(text, update)  # the link downloader picks up pasted Instagram links here
 
     # ------------------------------------------------------------------ connecting
     async def connect_menu(self, sess: UserSession, message) -> None:

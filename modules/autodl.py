@@ -12,13 +12,13 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import requests
-from telegram import InputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
+from telegram import (InputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo,
+                      ReplyParameters)
 from telegram.error import BadRequest, TelegramError
 
 from core.auth import describe_error
-from modules.base import BaseModule, Command
+from modules.base import BaseModule
 from utils.logger import get_logger
-from utils.progress import Progress
 from utils.tgsend import send_one
 
 TELEGRAM_MAX_BYTES = 50 * 1024 * 1024
@@ -32,6 +32,15 @@ _RESERVED = {
 }
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 _TRAILING_PUNCTUATION = ".,!?;:)]}>"
+_LINK_RE = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/\S+", re.I)
+
+
+def fmt_size(num_bytes: int) -> str:
+    """1.0 MB -> '1MB', 4.3 MB -> '4.3MB', under 1 MB -> '512KB'."""
+    if num_bytes < 1024 * 1024:
+        return f"{max(1, round(num_bytes / 1024))}KB"
+    mb = round(num_bytes / (1024 * 1024), 1)
+    return f"{mb:g}MB"
 
 
 def normalize_instagram_url(raw: str) -> str | None:
@@ -137,22 +146,12 @@ def _find_url(node, keys: tuple[str, ...], depth: int = 0, seen: set[int] | None
 class AutoDownloadModule(BaseModule):
     name = "autodl"
     toggleable = True
-    label = "Link downloader (paste a link or /dl)"
+    label = "Link downloader (paste a link)"
     description = "Auto-detect Instagram links and download media to Telegram"
 
     def __init__(self, ctx):
         super().__init__(ctx)
         self._busy: set[int] = set()
-
-    def get_commands(self):
-        return {
-            "dl": Command(
-                self.cmd_dl,
-                "Download an Instagram link (add 'audio' for Reel audio)",
-                "/dl <Instagram URL> [audio]",
-                takes_update=True,
-            )
-        }
 
     def get_callbacks(self):
         return {"autodl": self.on_button}
@@ -273,27 +272,22 @@ class AutoDownloadModule(BaseModule):
             "The audio may be licensed, restricted, or unavailable for download."
         )
 
-    def _download_sync(self, url: str, category: str, folder: Path, audio: bool = False) -> dict:
+    def _download_sync(self, url: str, category: str, folder: Path) -> dict:
         """A link you pasted is a one-off request, so skip the random pause instagrapi adds after every call
         (meant for bulk scraping). It is only a few calls, not a loop."""
         cl = self.ctx.ig.cl
         saved = cl.delay_range
         cl.delay_range = None
         try:
-            return self._download_inner(url, category, folder, audio)
+            return self._download_inner(url, category, folder)
         finally:
             cl.delay_range = saved
 
-    def _download_inner(self, url: str, category: str, folder: Path, audio: bool = False) -> dict:
+    def _download_inner(self, url: str, category: str, folder: Path) -> dict:
         """Perform network operations synchronously under InstagramClient's single-call lock."""
         cl = self.ctx.ig.cl
         if category == "reel":
             pk = str(cl.media_pk_from_url(url))
-            if audio:
-                media = cl.media_info(pk)
-                audio_url = self._track_url(cl, media)
-                result = cl.track_download_by_url(audio_url, filename="original_audio", folder=folder)
-                return {"paths": self._paths(result, folder), "pk": pk, "is_reel": True, "kind": "audio"}
             result = cl.clip_download(pk, folder=folder)
             return {"paths": self._paths(result, folder), "pk": pk, "is_reel": True, "kind": "reel"}
 
@@ -303,12 +297,6 @@ class AutoDownloadModule(BaseModule):
             product_type = str(_value(media, "product_type") or "").lower()
             media_type = int(_value(media, "media_type") or 0)
             is_reel = product_type == "clips"
-            if audio:
-                if not is_reel:
-                    raise ValueError("The audio option is only available for Reels.")
-                audio_url = self._track_url(cl, media)
-                result = cl.track_download_by_url(audio_url, filename="original_audio", folder=folder)
-                return {"paths": self._paths(result, folder), "pk": pk, "is_reel": True, "kind": "audio"}
             if media_type == 8:
                 result = cl.album_download(pk, folder=folder)
                 label = "album"
@@ -327,9 +315,6 @@ class AutoDownloadModule(BaseModule):
             else:
                 raise RuntimeError(f"Unsupported Instagram media type: {media_type}.")
             return {"paths": self._paths(result, folder), "pk": pk, "is_reel": is_reel, "kind": label}
-
-        if audio:
-            raise ValueError("The audio option is only available for Reels.")
 
         if category == "story":
             story_pk = str(cl.story_pk_from_url(url))
@@ -354,7 +339,7 @@ class AutoDownloadModule(BaseModule):
 
         raise ValueError("Unsupported Instagram link category.")
 
-    async def _send_paths(self, bot, chat_id: int, paths: list[Path], caption: str) -> int:
+    async def _send_paths(self, bot, chat_id: int, paths: list[Path], caption: str, markup=None, reply_to: int | None = None) -> int:
         if not paths:
             raise RuntimeError("Instagram returned no downloadable media files.")
         too_big = [p for p in paths if p.stat().st_size > TELEGRAM_MAX_BYTES]
@@ -374,12 +359,13 @@ class AutoDownloadModule(BaseModule):
                     await bot.send_audio(
                         chat_id,
                         audio=InputFile(data, filename=path.name),
-                        caption=f"🎵 Original audio\n{html.escape(caption, quote=False)}",
+                        caption="🎵 Original audio" + (f"\n{html.escape(caption, quote=False)}" if caption else ""),
                         parse_mode="HTML",
+                        reply_parameters=ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None,
                     )
                 else:
                     kind = "video" if suffix in (".mp4", ".mov", ".m4v", ".webm", ".mkv") else "photo"
-                    await send_one(bot, chat_id, kind, data, caption if offset == 0 else "")
+                    await send_one(bot, chat_id, kind, data, caption if offset == 0 else "", reply_markup=markup)
                 sent += 1
                 continue
 
@@ -408,54 +394,77 @@ class AutoDownloadModule(BaseModule):
                     sent += 1
         return sent
 
-    async def _run(self, update, url: str, category: str, audio: bool = False) -> None:
+    @staticmethod
+    async def _react(bot, message, emoji: str) -> None:
+        """React to the user's message. Never fatal (old Telegram clients / library versions just skip it)."""
+        try:
+            await bot.set_message_reaction(message.chat_id, message.message_id, reaction=[emoji])
+        except Exception as e:
+            log.debug("Could not react to the message (%s)", type(e).__name__)
+
+    async def on_text(self, text: str, update) -> bool:
+        """Any message containing an Instagram link is downloaded. No command needed."""
+        match = _LINK_RE.search(text or "")
+        if not match:
+            return False
+        classified = classify_instagram_url(match.group(0).rstrip(".,)"))
+        message = update.effective_message
+        if not classified:
+            await message.reply_text("Unsupported link. Send an Instagram Reel, post, Story, Highlight, or profile URL.")
+            return True
+        category, url = classified
+        if category == "profile":
+            manager = getattr(self.ctx, "modules", None)
+            found = manager.all_commands().get("dump") if manager else None
+            username = urlparse(url).path.strip("/").split("/", 1)[0]
+            if found and _USERNAME_RE.fullmatch(username):
+                command, _module = found
+                await command.handler([username], update)
+            else:
+                await message.reply_text(f"Use /dump {username or url} to open the profile card.")
+            return True
+        await self._run(update, url, category)
+        return True
+
+    async def _run(self, update, url: str, category: str) -> None:
         message = update.effective_message
         chat_id = update.effective_chat.id
+        bot = update.get_bot()
         if chat_id in self._busy:
             await message.reply_text("Another download is still running in this chat. Please wait.")
             return
         self._busy.add(chat_id)
-        status = await Progress.begin(update.get_bot(), chat_id, f"Downloading {category}" if category else "Downloading", url, "Reading link")
+        await self._react(bot, message, "👀")  # "working on it" shows on the user's own message
         try:
             with tempfile.TemporaryDirectory(prefix="hyperig-dl-") as temp:
                 folder = Path(temp)
-                await status.set("Fetching media from Instagram", 0.3)
-                t0 = time.monotonic()
-                result = await self._ig(lambda: self._download_sync(url, category, folder, audio=audio))
-                t1 = time.monotonic()
+                result = await self._ig(lambda: self._download_sync(url, category, folder))
                 paths = result["paths"]
                 if not paths:
                     raise RuntimeError("Instagram returned no downloadable media files.")
-                caption = f"📥 <b>Instagram {html.escape(result['kind'].title())}</b>\n<a href=\"{html.escape(url, quote=True)}\">Open on Instagram</a>"
-                total_mb = sum(p.stat().st_size for p in paths) / 1_000_000
-                await status.set(f"Uploading {len(paths)} file(s), {total_mb:.1f} MB", 0.7)
-                sent = await self._send_paths(update.get_bot(), chat_id, paths, caption)
-                t2 = time.monotonic()
-                await status.done(
-                    f"{result['kind'].title()}, {sent} file(s), {total_mb:.1f} MB\n"
-                    f"Instagram {t1 - t0:.1f}s, upload to Telegram {t2 - t1:.1f}s"
+                total = sum(p.stat().st_size for p in paths)
+                caption = (
+                    f"📥 <b>Instagram {html.escape(result['kind'].title())}</b>\n"
+                    f"<a href=\"{html.escape(url, quote=True)}\">Open on Instagram</a>\n"
+                    f"Size: {fmt_size(total)}"
                 )
-                if result["is_reel"] and not audio and self.ctx.prefs.get("dl_audio", True):
+                markup = None
+                if result["is_reel"] and len(paths) == 1 and self.ctx.prefs.get("dl_audio", True):
+                    # One message: the Reel itself carries the audio button.
                     markup = InlineKeyboardMarkup(
                         [[InlineKeyboardButton("Download original audio", callback_data=f"m:autodl:a:{result['pk']}")]]
                     )
-                    await update.get_bot().send_message(
-                        chat_id,
-                        "Optional: download the Reel's available soundtrack separately.",
-                        reply_markup=markup,
-                    )
+                await self._send_paths(bot, chat_id, paths, caption, markup=markup)
+            await self._react(bot, message, "👍")
         except Exception as e:
             log.info("Instagram link download failed (%s)", type(e).__name__)
-            await status.fail(self._explain(e))
+            await self._react(bot, message, "👎")
+            await message.reply_text(self._explain(e))
         finally:
             self._busy.discard(chat_id)
 
-    async def _download_audio_by_pk(self, bot, chat_id: int, media_pk: str) -> None:
-        if chat_id in self._busy:
-            await bot.send_message(chat_id, "Another download is still running in this chat. Please wait.")
-            return
+    async def _download_audio_by_pk(self, bot, chat_id: int, media_pk: str, reply_to: int | None = None) -> None:
         self._busy.add(chat_id)
-        status = await Progress.begin(bot, chat_id, "Downloading audio", f"Reel {media_pk}", "Fetching audio")
         try:
             with tempfile.TemporaryDirectory(prefix="hyperig-audio-") as temp:
                 folder = Path(temp)
@@ -473,10 +482,10 @@ class AutoDownloadModule(BaseModule):
                 paths = await self._ig(download)
                 if not paths:
                     raise RuntimeError("Instagram returned no audio file.")
-                sent = await self._send_paths(bot, chat_id, paths, f"🎵 Audio from Reel {media_pk}")
-                await status.done(f"{sent} audio file(s)")
+                await self._send_paths(bot, chat_id, paths, "", reply_to=reply_to)
         except Exception as e:
-            await status.fail(self._explain(e))
+            reply = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
+            await bot.send_message(chat_id, self._explain(e), reply_parameters=reply)
         finally:
             self._busy.discard(chat_id)
 
@@ -494,33 +503,14 @@ class AutoDownloadModule(BaseModule):
         except Exception:
             return f"{type(error).__name__}: {error}"
 
-    async def cmd_dl(self, args, update):
-        if not args:
-            await update.effective_message.reply_text("Usage: /dl <Instagram URL> [audio]")
-            return
-        classified = classify_instagram_url(args[0])
-        if not classified:
-            await update.effective_message.reply_text(
-                "Unsupported link. Send an Instagram Reel, post, Story, Highlight, or profile URL."
-            )
-            return
-        category, url = classified
-        if category == "profile":
-            manager = getattr(self.ctx, "modules", None)
-            found = manager.all_commands().get("dump") if manager else None
-            username = urlparse(url).path.strip("/").split("/", 1)[0]
-            if found and _USERNAME_RE.fullmatch(username):
-                command, _module = found
-                await command.handler([username], update)
-            else:
-                await update.effective_message.reply_text(f"Use /dump {username or url} to open the profile card.")
-            return
-        audio = len(args) > 1 and args[1].lower() in {"audio", "track", "sound"}
-        await self._run(update, url, category, audio=audio)
-
     async def on_button(self, rest: str, query, context) -> None:
         action, _, argument = rest.partition(":")
         if action != "a" or not argument.isdigit():
+            await query.answer()
             return
-        await query.answer()
-        await self._download_audio_by_pk(context.bot, query.message.chat_id, argument)
+        chat_id = query.message.chat_id
+        if chat_id in self._busy:
+            await query.answer("Another download is still running. Please wait.", show_alert=True)
+            return
+        await query.answer("Fetching audio…")
+        await self._download_audio_by_pk(context.bot, chat_id, argument, reply_to=query.message.message_id)

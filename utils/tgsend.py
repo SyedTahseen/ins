@@ -76,21 +76,22 @@ def caption_of(m, kind: str) -> str:
     return "\n".join(x for x in (text, head, link) if x)
 
 
-async def send_one(bot, chat_id: int, kind: str, data: bytes, caption: str) -> None:
+async def send_one(bot, chat_id: int, kind: str, data: bytes, caption: str, reply_markup=None) -> None:
     cap = caption[:1024] or None
     try:
         if kind == "photo":
-            await tg_call(lambda: bot.send_photo(chat_id, photo=data, caption=cap, parse_mode="HTML"))
+            await tg_call(lambda: bot.send_photo(chat_id, photo=data, caption=cap, parse_mode="HTML", reply_markup=reply_markup))
         else:
             await tg_call(
                 lambda: bot.send_video(
-                    chat_id, video=InputFile(data, filename="video.mp4"), caption=cap, parse_mode="HTML", supports_streaming=True
+                    chat_id, video=InputFile(data, filename="video.mp4"), caption=cap, parse_mode="HTML", supports_streaming=True,
+                    reply_markup=reply_markup,
                 )
             )
     except BadRequest as e:
         log.info("Telegram refused the %s (%s), sending it as a file", kind, e)
         name = "photo.jpg" if kind == "photo" else "video.mp4"
-        await tg_call(lambda: bot.send_document(chat_id, document=InputFile(data, filename=name), caption=cap, parse_mode="HTML"))
+        await tg_call(lambda: bot.send_document(chat_id, document=InputFile(data, filename=name), caption=cap, parse_mode="HTML", reply_markup=reply_markup))
 
 
 async def send_items(bot, chat_id: int, items: list[tuple[str, str]], caption: str, fetch: Fetch) -> int:
