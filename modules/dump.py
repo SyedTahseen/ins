@@ -25,7 +25,7 @@ from modules.base import BaseModule, Command
 from utils import media as media_utils
 from utils.logger import get_logger
 from utils.progress import Progress
-from utils.tgsend import caption_of, clip as _clip, esc as _esc, items_of, num as _num, send_items, send_one, set_reaction, DONE_REACTION, FAILED_REACTIONS
+from utils.tgsend import caption_of, clip as _clip, esc as _esc, items_of, num as _num, send_items, send_one, set_reaction, DONE_REACTION
 
 log = get_logger("dump")
 
@@ -513,11 +513,10 @@ class DumpModule(BaseModule):
             name = await self._username_in(text)
             if not name:
                 return False
-            sent = False
-            try:
-                sent = await self._card_message(update, name, detailed=True, with_menu=True)
-            finally:
-                await set_reaction(update.get_bot(), message, *([DONE_REACTION] if sent else FAILED_REACTIONS))
+            bot = update.get_bot()
+            await set_reaction(bot, message, DONE_REACTION)  # instant
+            if not await self._card_message(update, name, detailed=True, with_menu=True):
+                await set_reaction(bot, message)  # the error went out as a message, so take the 👍 back off
             return True
         kind, username = wanted
         word = text.strip().lower()

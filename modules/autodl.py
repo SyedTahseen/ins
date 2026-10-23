@@ -21,7 +21,7 @@ from telegram.error import BadRequest, TelegramError
 from core.auth import describe_error
 from modules.base import BaseModule
 from utils.logger import get_logger
-from utils.tgsend import DONE_REACTION, FAILED_REACTIONS, clip, esc, send_one, set_reaction
+from utils.tgsend import DONE_REACTION, clip, esc, send_one, set_reaction
 
 TELEGRAM_MAX_BYTES = 50 * 1024 * 1024
 CAPTION_TZ = timezone.utc          # time zone of the date shown in the caption
@@ -494,7 +494,7 @@ class AutoDownloadModule(BaseModule):
             await message.reply_text("Another download is still running in this chat. Please wait.")
             return
         self._busy.add(chat_id)
-        ok = False
+        await set_reaction(bot, message, DONE_REACTION)  # instant: the 👍 shows the link was picked up
         try:
             with tempfile.TemporaryDirectory(prefix="hyperig-dl-") as temp:
                 folder = Path(temp)
@@ -511,13 +511,12 @@ class AutoDownloadModule(BaseModule):
                         [[InlineKeyboardButton("Download original audio", callback_data=f"m:autodl:a:{result['pk']}")]]
                     )
                 await self._send_paths(bot, chat_id, paths, caption, markup=markup)
-            ok = True
         except Exception as e:
-            log.info("Instagram link download failed (%s)", type(e).__name__)
+            log.info("Instagram link download failed (%s: %s)", type(e).__name__, str(e)[:200])
+            await set_reaction(bot, message)  # nothing was delivered, so take the 👍 back off
             await message.reply_text(self._explain(e))
         finally:
             self._busy.discard(chat_id)
-            await set_reaction(bot, message, *([DONE_REACTION] if ok else FAILED_REACTIONS))
 
     @staticmethod
     def _has_video_track(path: Path) -> bool:

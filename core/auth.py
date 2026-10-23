@@ -215,9 +215,25 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
         return ErrorInfo("throttle", f"Instagram is rate-limiting us ({type(e).__name__}). Backing off.", False)
     if isinstance(e, (LoginRequired, ClientLoginRequired)):
         return ErrorInfo("session", "The Instagram session expired.", True)
+    if _is_not_found(e):
+        return ErrorInfo(
+            "notfound",
+            "Instagram couldn't find that. The link or username may be wrong, or the post was deleted or is private.",
+            False,
+        )
     if isinstance(e, (ClientConnectionError, ClientRequestTimeout)):
         return ErrorInfo("network", f"Network problem talking to Instagram ({type(e).__name__}).", False)
     return ErrorInfo("other", f"{type(e).__name__}: {detail}", False)
+
+
+_NOT_FOUND_NAMES = {
+    "ClientGraphqlError", "ClientNotFoundError", "MediaNotFound", "UserNotFound", "StoryNotFound", "HighlightNotFound",
+}
+
+
+def _is_not_found(e: Exception) -> bool:
+    """Instagram's 'nothing here' answers: a bad shortcode comes back as a GraphQL 'Query Error', not a clean 404."""
+    return any(cls.__name__ in _NOT_FOUND_NAMES for cls in type(e).__mro__)
 
 
 def _needs_app_migration(e: Exception) -> bool:

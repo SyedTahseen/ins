@@ -32,7 +32,6 @@ def num(value) -> str:
 
 
 DONE_REACTION = "👍"
-FAILED_REACTIONS = ("❌", "👎")   # ❌ is not on Telegram's bot reaction list, so 👎 is the fallback
 _REJECTED_REACTIONS: set[str] = set()   # emoji Telegram refused for bots, so we stop asking
 
 
