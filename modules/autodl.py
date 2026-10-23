@@ -449,17 +449,17 @@ class AutoDownloadModule(BaseModule):
             for index, path in enumerate(group):
                 suffix = path.suffix.lower()
                 data = path.read_bytes()
-                file_input = InputFile(data, filename=path.name)
+                file_input = InputFile(data, filename=path.name, attach=True)  # attach=True is required inside an album
                 file_caption = caption if offset == 0 and index == 0 else None
                 if suffix in (".mp4", ".mov", ".m4v", ".webm", ".mkv"):
                     media.append(InputMediaVideo(media=file_input, caption=file_caption, parse_mode="HTML" if file_caption else None))
                 else:
                     media.append(InputMediaPhoto(media=file_input, caption=file_caption, parse_mode="HTML" if file_caption else None))
             try:
-                await bot.send_media_group(chat_id, media=media)
+                await bot.send_media_group(chat_id, media=media, read_timeout=180, write_timeout=180)
                 sent += len(group)
             except BadRequest as e:
-                log.info("Could not send Instagram media group; falling back to separate files: %s", e)
+                log.warning("Could not send Instagram media group; falling back to separate files: %s", e)
                 for index, path in enumerate(group):
                     suffix = path.suffix.lower()
                     data = path.read_bytes()
