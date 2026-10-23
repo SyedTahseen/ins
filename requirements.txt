@@ -1,4 +1,4 @@
 instagrapi>=3.0.26
-python-telegram-bot>=21.0
+python-telegram-bot>=22.7
 pymongo
 python-dotenv

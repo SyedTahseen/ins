@@ -19,7 +19,7 @@ from utils.logger import get_logger
 from utils.progress import Progress
 from utils.caption import build_caption, build_zip_caption, info_entry, label_of, link_of, meta_of, slug
 from utils.tgsend import clip as _clip, esc as _esc, fetch_items, items_of, num as _num, send_files, send_one, set_reaction, tg_call, DONE_REACTION
-from utils.ui import BUSY, NOT_CONNECTED, bad, screen
+from utils.ui import BUSY, NOT_CONNECTED, STYLE_BY_LABEL, bad, button, screen
 from utils.zipper import ZipParts
 
 log = get_logger("dump")
@@ -63,7 +63,7 @@ def parse_target(raw: str) -> str | None:
 
 
 def _btn(text: str, act: str, arg: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text, callback_data=f"m:{PREFIX}:{act}:{arg}")
+    return button(text, STYLE_BY_LABEL.get(text), callback_data=f"m:{PREFIX}:{act}:{arg}")
 
 
 class DumpModule(BaseModule):
