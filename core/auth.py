@@ -10,70 +10,37 @@ from datetime import datetime, timezone
 from urllib.parse import quote, unquote, urlparse
 
 from instagrapi import Client
-try:
-    from instagrapi.config import DEFAULT_APP_VERSION
-except ImportError:
-    DEFAULT_APP_VERSION = None
-from instagrapi import exceptions as _ig_exc
+from instagrapi.config import DEFAULT_APP_VERSION
+from instagrapi.exceptions import (
+    AccountSuspended,
+    BadCredentials,
+    BadPassword,
+    ChallengeRequired,
+    ChallengeSelfieCaptcha,
+    ChallengeUnknownStep,
+    ClientConnectionError,
+    ClientError,
+    ClientIncompleteReadError,
+    ClientLoginRequired,
+    ClientNeedsUpgradeError,
+    ClientRequestTimeout,
+    ClientThrottledError,
+    FeedbackRequired,
+    LegacyForceSetNewPasswordForm,
+    LoginRequired,
+    PleaseWaitFewMinutes,
+    ProxyAddressIsBlocked,
+    RateLimitError,
+    RecaptchaChallengeForm,
+    ReloginAttemptExceeded,
+    SelectContactPointRecoveryForm,
+    SentryBlock,
+    SubmitPhoneNumberForm,
+    TwoFactorRequired,
+)
+from instagrapi.mixins.challenge import ChallengeChoice
+from instagrapi.utils import json_value
 
-def _exc(name):
-    """Look up an instagrapi exception; older/newer versions lack some, so fall back to a never-raised stub."""
-    found = getattr(_ig_exc, name, None)
-    if isinstance(found, type) and issubclass(found, BaseException):
-        return found
-    return type(name, (Exception,), {"__doc__": "stub: not provided by the installed instagrapi"})
-
-
-AccountSuspended = _exc("AccountSuspended")
-AuthRequiredProxyError = _exc("AuthRequiredProxyError")
-BadCredentials = _exc("BadCredentials")
-BadPassword = _exc("BadPassword")
-ChallengeRequired = _exc("ChallengeRequired")
-ChallengeSelfieCaptcha = _exc("ChallengeSelfieCaptcha")
-ChallengeUnknownStep = _exc("ChallengeUnknownStep")
-CheckpointRequired = _exc("CheckpointRequired")
-ClientConnectionError = _exc("ClientConnectionError")
-ClientError = _exc("ClientError")
-ClientIncompleteReadError = _exc("ClientIncompleteReadError")
-ClientLoginRequired = _exc("ClientLoginRequired")
-ClientNeedsUpgradeError = _exc("ClientNeedsUpgradeError")
-ClientRequestTimeout = _exc("ClientRequestTimeout")
-ClientThrottledError = _exc("ClientThrottledError")
-ConnectProxyError = _exc("ConnectProxyError")
-ConsentRequired = _exc("ConsentRequired")
-FeedbackRequired = _exc("FeedbackRequired")
-LegacyForceSetNewPasswordForm = _exc("LegacyForceSetNewPasswordForm")
-LoginRequired = _exc("LoginRequired")
-PleaseWaitFewMinutes = _exc("PleaseWaitFewMinutes")
-ProxyAddressIsBlocked = _exc("ProxyAddressIsBlocked")
-RateLimitError = _exc("RateLimitError")
-RecaptchaChallengeForm = _exc("RecaptchaChallengeForm")
-ReloginAttemptExceeded = _exc("ReloginAttemptExceeded")
-SelectContactPointRecoveryForm = _exc("SelectContactPointRecoveryForm")
-SentryBlock = _exc("SentryBlock")
-SubmitPhoneNumberForm = _exc("SubmitPhoneNumberForm")
-TwoFactorRequired = _exc("TwoFactorRequired")
-try:
-    from instagrapi.mixins.challenge import ChallengeChoice
-except ImportError:  # pragma: no cover
-    import enum
-
-    class ChallengeChoice(enum.Enum):
-        SMS = 0
-        EMAIL = 1
-
-try:
-    from instagrapi.utils import json_value
-except ImportError:  # pragma: no cover
-    def json_value(data, *keys, default=None):
-        for key in keys:
-            try:
-                data = data[key]
-            except (KeyError, IndexError, TypeError):
-                return default
-        return data
-
-from core.compat import call, call_if, make_client
 from utils.logger import get_logger
 
 log = get_logger("auth")
@@ -209,7 +176,7 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
         return ErrorInfo("challenge", "Instagram wants a selfie/captcha. Complete it in the official Instagram app, then reconnect with /connect.", True)
     if isinstance(e, AccountSuspended):
         return ErrorInfo("account", "Instagram says this account is suspended. Check it in the Instagram app.", True)
-    if isinstance(e, (CheckpointRequired, ConsentRequired)):
+    if _has_name(e, {"CheckpointRequired", "ConsentRequired"}):
         return ErrorInfo("challenge", f"Instagram wants a security check or consent. Finish it in the Instagram app, then reconnect with /connect. ({type(e).__name__})", True)
     if isinstance(e, (RecaptchaChallengeForm, SelectContactPointRecoveryForm, ChallengeUnknownStep, SubmitPhoneNumberForm, LegacyForceSetNewPasswordForm)):
         return ErrorInfo("challenge", f"Instagram started a security check that can't be automated. Finish it in the Instagram app, then reconnect with /connect. ({type(e).__name__})", True)
@@ -235,7 +202,7 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
             "Instagram couldn't find that. The link or username may be wrong, or the post was deleted or is private.",
             False,
         )
-    if isinstance(e, (ConnectProxyError, AuthRequiredProxyError)):
+    if _has_name(e, {"ConnectProxyError", "AuthRequiredProxyError"}):
         return ErrorInfo("network", f"The proxy could not be used ({type(e).__name__}). Check IG_PROXY.", False)
     if isinstance(e, ClientIncompleteReadError):
         return ErrorInfo("network", "The download was interrupted. Try again.", False)
@@ -250,8 +217,13 @@ _NOT_FOUND_NAMES = {
 }
 
 
+def _has_name(e: Exception, names: set) -> bool:
+    # Matched by name: these classes only exist in some instagrapi releases.
+    return any(cls.__name__ in names for cls in type(e).__mro__)
+
+
 def _is_not_found(e: Exception) -> bool:
-    return any(cls.__name__ in _NOT_FOUND_NAMES for cls in type(e).__mro__)
+    return _has_name(e, _NOT_FOUND_NAMES)
 
 
 def _needs_app_migration(e: Exception) -> bool:
@@ -303,8 +275,7 @@ class AuthManager:
 
     def _build_client(self, session: dict | None):
         cfg = self.cfg
-        cl = make_client(
-            self.client_factory,
+        cl = self.client_factory(
             settings=session or None,
             proxy=cfg.ig_proxy,
             delay_range=cfg.ig_delay_range,
@@ -320,13 +291,13 @@ class AuthManager:
             self._apply_app_profile(cl)
         if not session:
             if cfg.ig_locale:
-                call_if(cl, "set_locale", cfg.ig_locale)
+                cl.set_locale(cfg.ig_locale)
             if cfg.ig_country:
-                call_if(cl, "set_country", cfg.ig_country)
+                cl.set_country(cfg.ig_country)
             if cfg.ig_country_code is not None:
-                call_if(cl, "set_country_code", cfg.ig_country_code)
+                cl.set_country_code(cfg.ig_country_code)
             if cfg.ig_timezone_offset is not None:
-                call_if(cl, "set_timezone_offset", cfg.ig_timezone_offset)
+                cl.set_timezone_offset(cfg.ig_timezone_offset)
         if cfg.ig_phone_number:
             cl.phone_number = cfg.ig_phone_number
         cl.challenge_code_handler = self._challenge_code_handler
@@ -336,17 +307,12 @@ class AuthManager:
         return cl
 
     def _use_default_app_profile(self, cl) -> None:
-        if DEFAULT_APP_VERSION is None or not hasattr(cl, "set_app"):
-            return  # installed instagrapi is too old for app profiles; run: pip install -U instagrapi
         cl.set_app(DEFAULT_APP_VERSION)
         cl.set_user_agent()
         self._app_overridden = True
 
     def _apply_app_profile(self, cl) -> None:
         cfg = self.cfg
-        if not hasattr(cl, "set_app"):
-            log.warning("Installed instagrapi has no set_app(); IG_APP_VERSION is ignored")
-            return
         try:
             cl.set_app(cfg.ig_app_version)
             return
@@ -378,7 +344,7 @@ class AuthManager:
     def _handle_exception(self, client, e):
         if isinstance(e, BadPassword):
             log.warning("bad_password from Instagram: %s", e)
-            if getattr(client, "relogin_attempt", 0) > 0:
+            if client.relogin_attempt > 0:
                 raise ReloginAttemptExceeded(e)
             raise e
         if isinstance(e, (LoginRequired, ClientLoginRequired)):
@@ -392,7 +358,7 @@ class AuthManager:
             return True
         if isinstance(e, ChallengeRequired):
             api_path = json_value(client.last_json, "challenge", "api_path")
-            if api_path == "/challenge/" or not hasattr(client, "challenge_resolve"):
+            if api_path == "/challenge/":
                 log.warning("Generic challenge flow needs manual handling")
                 raise e
             client.challenge_resolve(client.last_json)
@@ -411,16 +377,16 @@ class AuthManager:
     def _attempt_login(self, cl, relogin: bool) -> None:
         cfg = self.cfg
         legacy = cfg.ig_legacy_login or (self._custom_profile and not cfg.ig_bloks_versioning_id)
-        login = cl.login_legacy if legacy and hasattr(cl, "login_legacy") else cl.login
+        login = cl.login_legacy if legacy else cl.login
         username = (cfg.ig_username or "").strip()
         code = self._totp(cl)
         try:
-            call(login, username, cfg.ig_password, relogin=relogin, verification_code=code)
+            login(username, cfg.ig_password, relogin=relogin, verification_code=code)
         except TwoFactorRequired:
             code = self.prompter.ask("Instagram needs your 2FA code (authenticator app, SMS or 8-digit backup code).")
             if not code:
                 raise
-            call(login, username, cfg.ig_password, relogin=relogin, verification_code=code)
+            login(username, cfg.ig_password, relogin=relogin, verification_code=code)
 
     def _password_login(self, cl, relogin: bool = False) -> None:
         if not self.cfg.ig_password:

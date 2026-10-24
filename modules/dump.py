@@ -132,8 +132,22 @@ class DumpModule(BaseModule):
         except Exception:
             return f"{type(e).__name__}: {e}"
 
+    async def _about(self, user) -> dict | None:
+        # "About this account" (country, join date, former usernames); not every account exposes it.
+        try:
+            about = await self._ig(lambda: self.ctx.ig.cl.user_about_v1(str(user.pk)))
+        except Exception as e:
+            log.info("About-this-account info unavailable (%s)", type(e).__name__)
+            return None
+        return {
+            "country": about.country or None,
+            "date_joined": about.date or None,
+            "former_usernames": about.former_usernames or None,
+            "is_verified": about.is_verified,
+        }
+
     @staticmethod
-    def _card(u, detailed: bool = False) -> str:
+    def _card(u, detailed: bool = False, about: dict | None = None) -> str:
         badges = ("✅" if u.is_verified else "") + ("🔒" if u.is_private else "")
         lines = [f"<b>{_esc(u.full_name or u.username)}</b> {badges}".strip(), f"@{_esc(u.username)}"]
         lines.append(
@@ -148,6 +162,15 @@ class DumpModule(BaseModule):
             lines.append(f"🏷 {_esc(category)}")
         if detailed:
             lines += ["", f"🆔 <code>{u.pk}</code>"]
+            if about:
+                if about["country"]:
+                    lines.append(f"🌍 {_esc(str(about['country']))}")
+                if about["date_joined"]:
+                    lines.append(f"📅 Joined {_esc(str(about['date_joined']))}")
+                if about["former_usernames"]:
+                    former = about["former_usernames"]
+                    former = ", ".join(map(str, former)) if isinstance(former, (list, tuple)) else str(former)
+                    lines.append(f"🕘 Former usernames: {_esc(former)}")
         kind = "💼 Business" if u.is_business else "👤 Personal"
         lines.append(f"{'🔒 Private' if u.is_private else '🌐 Public'} account · {kind}" if detailed else
                      f"{'🔒 Private' if u.is_private else '🌐 Public'} account")
@@ -270,17 +293,7 @@ class DumpModule(BaseModule):
                 "following_count": user.following_count,
                 "profile_pic_url_hd": str(user.profile_pic_url_hd or user.profile_pic_url or ""),
             }
-            try:
-                about = await self._ig(lambda: self.ctx.ig.cl.user_about_v1(str(user.pk)))
-                doc["about"] = {
-                    "country": about.country or None,
-                    "date_joined": about.date or None,
-                    "former_usernames": about.former_usernames or None,
-                    "is_verified": about.is_verified,
-                }
-            except Exception as e:
-                log.info("About-this-account info unavailable (%s)", type(e).__name__)
-                doc["about"] = None
+            doc["about"] = await self._about(user)
             if not user.is_private:
                 medias = await self._ig(lambda: self.ctx.ig.cl.user_medias(str(user.pk), 12))
                 doc["recent_posts"] = [self._post_meta(m) for m in medias]
@@ -526,7 +539,8 @@ class DumpModule(BaseModule):
         except Exception as e:
             await message.reply_text(bad(self._explain(e)))
             return False
-        text = self._card(user, detailed)
+        about = await self._about(user) if detailed else None
+        text = self._card(user, detailed, about)
         markup = self._menu(username, bool(user.is_private)) if with_menu else None
         pic = str(user.profile_pic_url_hd or user.profile_pic_url or "")
         data = await self._fetch(pic) if pic else None
