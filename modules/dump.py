@@ -134,12 +134,12 @@ class DumpModule(BaseModule):
 
     @staticmethod
     def _read_about(cl, pk: str) -> dict:
-        """About this account. instagrapi's own parser raises IndexError on some accounts, so fall back to reading its raw reply."""
+        """About this account. instagrapi's own parser raises IndexError or a ValidationError on many accounts, so fall back to reading its raw reply."""
         try:
             about = cl.user_about_v1(pk)
             return {"country": about.country, "date_joined": about.date, "former_usernames": about.former_usernames,
                     "is_verified": about.is_verified}
-        except IndexError:
+        except Exception:  # IndexError / pydantic ValidationError from the library's parser
             pass
         reply = cl.last_json or {}
         country, joined, former = None, None, None
