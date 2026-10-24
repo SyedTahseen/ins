@@ -132,19 +132,40 @@ class DumpModule(BaseModule):
         except Exception:
             return f"{type(e).__name__}: {e}"
 
+    @staticmethod
+    def _read_about(cl, pk: str) -> dict:
+        """About this account. instagrapi's own parser raises IndexError on some accounts, so fall back to reading its raw reply."""
+        try:
+            about = cl.user_about_v1(pk)
+            return {"country": about.country, "date_joined": about.date, "former_usernames": about.former_usernames,
+                    "is_verified": about.is_verified}
+        except IndexError:
+            pass
+        reply = cl.last_json or {}
+        country, joined, former = None, None, None
+        for item in (((reply.get("layout") or {}).get("bloks_payload") or {}).get("data")) or []:
+            data = item.get("data") or {}
+            if str(data.get("key", "")).endswith("about_this_account_country") and isinstance(data.get("initial"), str):
+                country = data["initial"]
+        parts = json.dumps(reply).split('")":')
+        date_next = False
+        for i, part in enumerate(parts):
+            if date_next:
+                joined = part.strip().split(",")[0][1:-1]
+            if "Former usernames" in part and i + 2 < len(parts):
+                former = parts[i + 2].strip().split(",")[0][1:-1]
+            date_next = '"Date joined"' in part
+        return {"country": country, "date_joined": joined, "former_usernames": former,
+                "is_verified": '"Verified"' in json.dumps(reply)}
+
     async def _about(self, user) -> dict | None:
         # "About this account" (country, join date, former usernames); not every account exposes it.
         try:
-            about = await self._ig(lambda: self.ctx.ig.cl.user_about_v1(str(user.pk)))
+            about = await self._ig(lambda: self._read_about(self.ctx.ig.cl, str(user.pk)))
         except Exception as e:
             log.warning("About-this-account info unavailable for %s: %s: %s", user.username, type(e).__name__, str(e)[:200])
             return None
-        return {
-            "country": about.country or None,
-            "date_joined": about.date or None,
-            "former_usernames": about.former_usernames or None,
-            "is_verified": about.is_verified,
-        }
+        return {k: (v or None) if k != "is_verified" else v for k, v in about.items()}
 
     @staticmethod
     def _extras(u) -> dict:
