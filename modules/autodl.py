@@ -264,7 +264,7 @@ class AutoDownloadModule(BaseModule):
                 track = cl.track_info_by_canonical_id(str(canonical_id))
             except Exception:
                 track = None
-            url = _find_url(track, keys)
+            url = _find_url(track, keys + ("uri",))
             if url:
                 return url
         raise RuntimeError(

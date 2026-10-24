@@ -230,9 +230,10 @@ class FetchIGBot:
         head = f"Connected as @{esc(sess.ig.username)}. Connecting again replaces it.\n\n" if sess.ig.logged_in else ""
         body = (
             head + "Choose how to connect.\n\n"
-            "<b>Cookie</b> (recommended): paste the sessionid cookie from instagram.com in a browser where you are "
-            "logged in. It avoids new-login checks.\n\n"
-            "<b>Password</b>: your username and password. The password is used once and never saved."
+            "<b>Cookie</b>: paste the sessionid cookie from instagram.com in a browser where you are "
+            "logged in. Quick, but Instagram can reject a browser cookie sooner.\n\n"
+            "<b>Password</b>: your username and password (2FA supported). The password is used once and never saved; "
+            "the session is kept and reused."
         )
         return screen("Connect Instagram", body), kb([btn("Cookie", "cn:cookie"), btn("Password", "cn:pass")], [btn("Cancel", "cn:no")])
 

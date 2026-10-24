@@ -1,10 +1,13 @@
 import asyncio
+import time
 from dataclasses import replace
 
 from core.auth import AuthManager, CookieError, describe_error, parse_cookie_input
 from utils.logger import get_logger
 
 log = get_logger("instagram")
+
+SAVE_EVERY = 300
 
 
 class InstagramClient:
@@ -16,6 +19,7 @@ class InstagramClient:
         self.last_alert = ""
         self.on_alert = None
         self._lock = asyncio.Lock()
+        self._last_save = time.monotonic()
 
     @property
     def cl(self):
@@ -27,7 +31,19 @@ class InstagramClient:
 
     async def _call(self, fn, *args):
         async with self._lock:
-            return await asyncio.to_thread(fn, *args)
+            result = await asyncio.to_thread(fn, *args)
+        await self._maybe_save()
+        return result
+
+    async def _maybe_save(self) -> None:
+        # instagrapi can refresh session data while running; persist it now and then, not only at login/shutdown.
+        if not self.logged_in or time.monotonic() - self._last_save < SAVE_EVERY:
+            return
+        self._last_save = time.monotonic()
+        try:
+            await self._save_session()
+        except Exception:
+            log.exception("Could not save the refreshed session")
 
     async def _say(self, text: str) -> None:
         if self.on_alert:

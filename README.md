@@ -16,7 +16,7 @@ There is no bridge, web dashboard or realtime connection. The bot only talks to 
 
 `/connect` offers two ways, both inside the chat:
 
-- **Cookie (recommended):** paste the `sessionid` cookie from instagram.com. It avoids new-login checks.
+- **Cookie:** paste the `sessionid` cookie from instagram.com. Quick, but Instagram can reject a browser cookie sooner than a full login.
 - **Password:** username and password. If Instagram asks for a verification code, send it as the next message. The password is used once and never saved; your message with it is deleted.
 
 Only the resulting session is stored, per Telegram user. Nobody can use anyone else's account, and `/logout` deletes the session, settings and watchlist.
@@ -33,7 +33,7 @@ python main.py
 
 Docker: `docker build -t fetch-ig . && docker run --env-file .env -v fetchig-data:/app/data fetch-ig`
 
-Set `MONGO_URI` to keep data on a database instead of files. Instagram flags datacenter IPs and repeated logins, so for a server deployment set `IG_PROXY` to a residential proxy and prefer cookie login.
+Set `MONGO_URI` to keep data on a database instead of files. Instagram flags datacenter IPs and repeated logins, so for a server deployment set `IG_PROXY` to a residential proxy and keep one stable proxy per deployment (all accounts share `IG_PROXY`). Set `IG_READ_TIMEOUT` if large story or audio downloads time out.
 
 ## Add a feature
 

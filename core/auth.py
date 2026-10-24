@@ -12,23 +12,34 @@ from urllib.parse import quote, unquote, urlparse
 from instagrapi import Client
 from instagrapi.config import DEFAULT_APP_VERSION
 from instagrapi.exceptions import (
+    AccountSuspended,
+    AuthRequiredProxyError,
     BadCredentials,
     BadPassword,
     ChallengeRequired,
     ChallengeSelfieCaptcha,
     ChallengeUnknownStep,
+    CheckpointRequired,
     ClientConnectionError,
     ClientError,
+    ClientIncompleteReadError,
     ClientLoginRequired,
     ClientNeedsUpgradeError,
     ClientRequestTimeout,
     ClientThrottledError,
+    ConnectProxyError,
+    ConsentRequired,
     FeedbackRequired,
+    LegacyForceSetNewPasswordForm,
     LoginRequired,
     PleaseWaitFewMinutes,
+    ProxyAddressIsBlocked,
+    RateLimitError,
     RecaptchaChallengeForm,
     ReloginAttemptExceeded,
     SelectContactPointRecoveryForm,
+    SentryBlock,
+    SubmitPhoneNumberForm,
     TwoFactorRequired,
 )
 from instagrapi.mixins.challenge import ChallengeChoice
@@ -167,7 +178,11 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
         return ErrorInfo("2fa", "Instagram needs a 2FA code and none arrived in time. Try /connect again and send the code when asked.", True)
     if isinstance(e, ChallengeSelfieCaptcha):
         return ErrorInfo("challenge", "Instagram wants a selfie/captcha. Complete it in the official Instagram app, then reconnect with /connect.", True)
-    if isinstance(e, (RecaptchaChallengeForm, SelectContactPointRecoveryForm, ChallengeUnknownStep)):
+    if isinstance(e, AccountSuspended):
+        return ErrorInfo("account", "Instagram says this account is suspended. Check it in the Instagram app.", True)
+    if isinstance(e, (CheckpointRequired, ConsentRequired)):
+        return ErrorInfo("challenge", f"Instagram wants a security check or consent. Finish it in the Instagram app, then reconnect with /connect. ({type(e).__name__})", True)
+    if isinstance(e, (RecaptchaChallengeForm, SelectContactPointRecoveryForm, ChallengeUnknownStep, SubmitPhoneNumberForm, LegacyForceSetNewPasswordForm)):
         return ErrorInfo("challenge", f"Instagram started a security check that can't be automated. Finish it in the Instagram app, then reconnect with /connect. ({type(e).__name__})", True)
     if isinstance(e, ChallengeRequired):
         return ErrorInfo("challenge", f"Instagram wants a security check. Approve it in the Instagram app, then reconnect with /connect. ({detail})", True)
@@ -179,8 +194,10 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
             except Exception:
                 pass
         return ErrorInfo("feedback", f"Instagram restricted this action ({message or 'feedback_required'}). Cooling down.", False)
-    if isinstance(e, (PleaseWaitFewMinutes, ClientThrottledError)):
+    if isinstance(e, (PleaseWaitFewMinutes, ClientThrottledError, RateLimitError)):
         return ErrorInfo("throttle", f"Instagram is rate-limiting us ({type(e).__name__}). Backing off.", False)
+    if isinstance(e, (SentryBlock, ProxyAddressIsBlocked)):
+        return ErrorInfo("throttle", f"Instagram blocked this server's IP or proxy ({type(e).__name__}). Try a different proxy (IG_PROXY).", False)
     if isinstance(e, (LoginRequired, ClientLoginRequired)):
         return ErrorInfo("session", "The Instagram session expired. Reconnect with /connect.", True)
     if _is_not_found(e):
@@ -189,13 +206,18 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
             "Instagram couldn't find that. The link or username may be wrong, or the post was deleted or is private.",
             False,
         )
+    if isinstance(e, (ConnectProxyError, AuthRequiredProxyError)):
+        return ErrorInfo("network", f"The proxy could not be used ({type(e).__name__}). Check IG_PROXY.", False)
+    if isinstance(e, ClientIncompleteReadError):
+        return ErrorInfo("network", "The download was interrupted. Try again.", False)
     if isinstance(e, (ClientConnectionError, ClientRequestTimeout)):
         return ErrorInfo("network", f"Network problem talking to Instagram ({type(e).__name__}).", False)
     return ErrorInfo("other", f"{type(e).__name__}: {detail}", False)
 
 
 _NOT_FOUND_NAMES = {
-    "ClientGraphqlError", "ClientNotFoundError", "MediaNotFound", "UserNotFound", "StoryNotFound", "HighlightNotFound",
+    "ClientGraphqlError", "ClientNotFoundError", "MediaNotFound", "MediaUnavailable", "InvalidMediaId",
+    "UserNotFound", "StoryNotFound", "HighlightNotFound",
 }
 
 
@@ -239,6 +261,7 @@ class AuthManager:
         self._last_relogin = float("-inf")
         self._saved_hash: str | None = None
         self._custom_profile = False
+        self._app_overridden = False
         self.cl = self._build_client(None)
 
     def bind(self, loop, notify) -> None:
@@ -255,10 +278,14 @@ class AuthManager:
             settings=session or None,
             proxy=cfg.ig_proxy,
             delay_range=cfg.ig_delay_range,
-            override_app_version=cfg.ig_override_app_version,
             tls_verify=cfg.ig_tls_verify,
         )
         self._custom_profile = False
+        self._app_overridden = False
+        if cfg.ig_override_app_version:
+            self._use_default_app_profile(cl)
+        if cfg.ig_read_timeout:
+            cl.read_timeout = cfg.ig_read_timeout
         if cfg.ig_app_version and not (session or {}).get("authorization_data"):
             self._apply_app_profile(cl)
         if not session:
@@ -277,6 +304,11 @@ class AuthManager:
         cl.handle_exception = self._handle_exception
         self.cl = cl
         return cl
+
+    def _use_default_app_profile(self, cl) -> None:
+        cl.set_app(DEFAULT_APP_VERSION)
+        cl.set_user_agent()
+        self._app_overridden = True
 
     def _apply_app_profile(self, cl) -> None:
         cfg = self.cfg
@@ -322,14 +354,14 @@ class AuthManager:
                 raise e
             log.warning("login_required: session rejected, re-logging in once with the same device")
             self._relogin_core(client)
-            return
+            return True
         if isinstance(e, ChallengeRequired):
             api_path = json_value(client.last_json, "challenge", "api_path")
             if api_path == "/challenge/":
                 log.warning("Generic challenge flow needs manual handling")
                 raise e
             client.challenge_resolve(client.last_json)
-            return
+            return True
         if isinstance(e, FeedbackRequired):
             log.warning("feedback_required: %s", (client.last_json or {}).get("feedback_message", ""))
         elif isinstance(e, ClientThrottledError):
@@ -341,67 +373,19 @@ class AuthManager:
     def _totp(self, cl) -> str:
         return cl.totp_generate_code(self.cfg.ig_totp_secret) if self.cfg.ig_totp_secret else ""
 
-    def _caa_login(self, cl, username: str, password: str, relogin: bool = False, verification_code: str = "") -> bool:
-        cl.username = (username or "").strip()
-        cl.password = password
-        if not cl.username or not cl.password:
-            raise BadCredentials("Both username and password must be provided.")
-        if relogin:
-            cl._clear_session_state(
-                clear_authorization_data=True,
-                clear_authorization_header=True,
-                clear_private_cookies=True,
-                clear_public_cookies=True,
-            )
-            if cl.relogin_attempt > 1:
-                raise ReloginAttemptExceeded()
-            cl.relogin_attempt += 1
-        if cl.user_id and not relogin:
-            try:
-                cl.account_info()
-                return True
-            except LoginRequired:
-                return self._caa_login(cl, username, password, relogin=True, verification_code=verification_code)
-        if not cl.bloks_versioning_id:
-            raise ClientError(
-                "CAA login requires bloks_versioning_id for the saved app profile. "
-                "Load settings with override_app_version=True to use the supported app profile."
-            )
-        outcome = cl.bloks_caa_login(verification_code=verification_code)
-        logged = bool(outcome.get("logged_in"))
-        if not logged:
-            context = cl._extract_two_step_verification_context(outcome)
-            if context:
-                exc = TwoFactorRequired(
-                    "Instagram returned a Bloks two-factor context from the CAA login flow; provide verification_code",
-                    response=cl.last_response,
-                    **cl._exception_context(outcome),
-                )
-                if not verification_code.strip():
-                    raise exc
-                logged = cl._login_with_bloks_two_factor(verification_code, outcome, exc)
-            if not logged:
-                rejection = cl._caa_extract_rejection_message(outcome.get("result"))
-                markers = cl._caa_result_action_markers(outcome)
-                reason = rejection or ", ".join(markers) or str(outcome.get("reason") or "CAA login rejected")
-                raise ClientNeedsUpgradeError(reason)
-        cl.login_flow()
-        cl.last_login = time.time()
-        cl.relogin_attempt = 0
-        return True
-
     def _attempt_login(self, cl, relogin: bool) -> None:
         cfg = self.cfg
         legacy = cfg.ig_legacy_login or (self._custom_profile and not cfg.ig_bloks_versioning_id)
-        login = cl.login_legacy if legacy else (lambda u, p, relogin=False, verification_code="": self._caa_login(cl, u, p, relogin=relogin, verification_code=verification_code))
+        login = cl.login_legacy if legacy else cl.login
+        username = (cfg.ig_username or "").strip()
         code = self._totp(cl)
         try:
-            login(cfg.ig_username, cfg.ig_password, relogin=relogin, verification_code=code)
+            login(username, cfg.ig_password, relogin=relogin, verification_code=code)
         except TwoFactorRequired:
             code = self.prompter.ask("Instagram needs your 2FA code (authenticator app, SMS or 8-digit backup code).")
             if not code:
                 raise
-            login(cfg.ig_username, cfg.ig_password, relogin=relogin, verification_code=code)
+            login(username, cfg.ig_password, relogin=relogin, verification_code=code)
 
     def _password_login(self, cl, relogin: bool = False) -> None:
         if not self.cfg.ig_password:
@@ -411,16 +395,13 @@ class AuthManager:
         except ClientError as e:
             current_ver = (getattr(cl, "device_settings", None) or {}).get("app_version")
             already_current = bool(
-                cl.override_app_version
+                self._app_overridden
                 or (current_ver == DEFAULT_APP_VERSION and getattr(cl, "bloks_versioning_id", None))
             )
             if not _needs_app_migration(e) or already_current:
                 raise
             log.warning("Instagram rejected the old app profile (%s); retrying once with %s", current_ver, DEFAULT_APP_VERSION)
-            cl.override_app_version = True
-            cl.set_settings(cl.get_settings())
-            if self.cfg.ig_proxy:
-                cl.set_proxy(self.cfg.ig_proxy)
+            self._use_default_app_profile(cl)
             self._attempt_login(cl, relogin)
 
     def _relogin_core(self, cl) -> None:

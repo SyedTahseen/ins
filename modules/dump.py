@@ -204,7 +204,7 @@ class DumpModule(BaseModule):
             "type": m.product_type or {1: "photo", 2: "video", 8: "album"}.get(m.media_type, str(m.media_type)),
             "taken_at": m.taken_at.isoformat() if m.taken_at else None,
             "caption": m.caption_text,
-            "likes": m.like_count,
+            "likes": m.like_count if (m.like_count or 0) >= 0 else None,
             "comments": m.comment_count,
             "views": m.view_count or m.play_count,
         }
@@ -270,6 +270,17 @@ class DumpModule(BaseModule):
                 "following_count": user.following_count,
                 "profile_pic_url_hd": str(user.profile_pic_url_hd or user.profile_pic_url or ""),
             }
+            try:
+                about = await self._ig(lambda: self.ctx.ig.cl.user_about_v1(str(user.pk)))
+                doc["about"] = {
+                    "country": about.country or None,
+                    "date_joined": about.date or None,
+                    "former_usernames": about.former_usernames or None,
+                    "is_verified": about.is_verified,
+                }
+            except Exception as e:
+                log.info("About-this-account info unavailable (%s)", type(e).__name__)
+                doc["about"] = None
             if not user.is_private:
                 medias = await self._ig(lambda: self.ctx.ig.cl.user_medias(str(user.pk), 12))
                 doc["recent_posts"] = [self._post_meta(m) for m in medias]
