@@ -137,7 +137,7 @@ class DumpModule(BaseModule):
         try:
             about = await self._ig(lambda: self.ctx.ig.cl.user_about_v1(str(user.pk)))
         except Exception as e:
-            log.info("About-this-account info unavailable (%s)", type(e).__name__)
+            log.warning("About-this-account info unavailable for %s: %s: %s", user.username, type(e).__name__, str(e)[:200])
             return None
         return {
             "country": about.country or None,
@@ -147,7 +147,24 @@ class DumpModule(BaseModule):
         }
 
     @staticmethod
-    def _card(u, detailed: bool = False, about: dict | None = None) -> str:
+    def _extras(u) -> dict:
+        # Optional User fields: only present for some accounts (mostly business profiles).
+        phone = getattr(u, "contact_phone_number", None) or (
+            f"+{u.public_phone_country_code} {u.public_phone_number}"
+            if getattr(u, "public_phone_number", None) and getattr(u, "public_phone_country_code", None)
+            else getattr(u, "public_phone_number", None)
+        )
+        place = ", ".join(x for x in (getattr(u, "address_street", None), getattr(u, "city_name", None), getattr(u, "zip", None)) if x)
+        links = [str(getattr(b, "url", "") or "") for b in (getattr(u, "bio_links", None) or [])]
+        return {
+            "email": getattr(u, "public_email", None) or None,
+            "phone": phone or None,
+            "address": place or None,
+            "bio_links": [x for x in links if x and x != str(u.external_url or "")],
+        }
+
+    @staticmethod
+    def _card(u, detailed: bool = False, about: dict | None = None, extras: dict | None = None) -> str:
         badges = ("✅" if u.is_verified else "") + ("🔒" if u.is_private else "")
         lines = [f"<b>{_esc(u.full_name or u.username)}</b> {badges}".strip(), f"@{_esc(u.username)}"]
         lines.append(
@@ -162,7 +179,18 @@ class DumpModule(BaseModule):
             lines.append(f"🏷 {_esc(category)}")
         if detailed:
             lines += ["", f"🆔 <code>{u.pk}</code>"]
-            if about:
+            if extras:
+                if extras["email"]:
+                    lines.append(f"✉️ {_esc(extras['email'])}")
+                if extras["phone"]:
+                    lines.append(f"📞 {_esc(extras['phone'])}")
+                if extras["address"]:
+                    lines.append(f"📍 {_esc(extras['address'])}")
+                for link in extras["bio_links"][:5]:
+                    lines.append(f"🔗 {_esc(link)}")
+            if about is None:
+                lines.append("ℹ️ Account details (country, join date) are not available for this account.")
+            else:
                 if about["country"]:
                     lines.append(f"🌍 {_esc(str(about['country']))}")
                 if about["date_joined"]:
@@ -293,6 +321,7 @@ class DumpModule(BaseModule):
                 "following_count": user.following_count,
                 "profile_pic_url_hd": str(user.profile_pic_url_hd or user.profile_pic_url or ""),
             }
+            doc.update(self._extras(user))
             doc["about"] = await self._about(user)
             if not user.is_private:
                 medias = await self._ig(lambda: self.ctx.ig.cl.user_medias(str(user.pk), 12))
@@ -540,7 +569,7 @@ class DumpModule(BaseModule):
             await message.reply_text(bad(self._explain(e)))
             return False
         about = await self._about(user) if detailed else None
-        text = self._card(user, detailed, about)
+        text = self._card(user, detailed, about, self._extras(user) if detailed else None)
         markup = self._menu(username, bool(user.is_private)) if with_menu else None
         pic = str(user.profile_pic_url_hd or user.profile_pic_url or "")
         data = await self._fetch(pic) if pic else None
