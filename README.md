@@ -31,6 +31,12 @@ cp .env.example .env   # set TELEGRAM_BOT_TOKEN
 python main.py
 ```
 
+Check that your installed instagrapi has everything the bot uses (prints anything missing):
+
+```
+python check_api.py
+```
+
 Docker: `docker build -t fetch-ig . && docker run --env-file .env -v fetchig-data:/app/data fetch-ig`
 
 Set `MONGO_URI` to keep data on a database instead of files. Instagram flags datacenter IPs and repeated logins, so for a server deployment set `IG_PROXY` to a residential proxy and keep one stable proxy per deployment (all accounts share `IG_PROXY`). Set `IG_READ_TIMEOUT` if large story or audio downloads time out.

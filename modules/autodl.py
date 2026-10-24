@@ -334,7 +334,7 @@ class AutoDownloadModule(BaseModule):
 
         if category == "story":
             story_pk = str(cl.story_pk_from_url(url))
-            result = cl.story_download(story_pk, folder=folder)
+            result = cl.story_download(int(story_pk), folder=folder)
             return {"paths": self._paths(result, folder), "pk": story_pk, "is_reel": False, "kind": "story"}
 
         if category == "highlight":

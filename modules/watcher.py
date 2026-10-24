@@ -11,6 +11,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 
 from core.auth import describe_error
+from core.compat import user_by_username
 from modules.base import BaseModule, Command
 from modules.dump import parse_target
 from utils import media as media_utils
@@ -406,7 +407,7 @@ class WatcherModule(BaseModule):
             await self._send_text(line)
 
     async def _profile_changes(self, username: str, entry: dict) -> None:
-        user = await self._ig(lambda: self.ctx.ig.cl.user_info_by_username(username, False))
+        user = await self._ig(lambda: user_by_username(self.ctx.ig.cl, username))
         if user.is_private:
             from instagrapi import exceptions as ig_exc
 
@@ -471,7 +472,7 @@ class WatcherModule(BaseModule):
             if len(self._watch) >= self.max_watch:
                 return False, bad(f"The limit is {self.max_watch} watched accounts (keeps the Instagram login safe). Remove one first.")
         try:
-            user = await self._ig(lambda: self.ctx.ig.cl.user_info_by_username(username, False))
+            user = await self._ig(lambda: user_by_username(self.ctx.ig.cl, username))
             if user.is_private:
                 return False, bad("That account is private. I only watch public accounts.")
             entry = new_entry(str(user.pk), flags)
