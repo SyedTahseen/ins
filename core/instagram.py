@@ -2,12 +2,13 @@ import asyncio
 import time
 from dataclasses import replace
 
-from core.auth import AuthManager, CookieError, describe_error, parse_cookie_input
+from core.auth import AuthManager, CookieError, CooldownError, describe_error, parse_cookie_input
 from utils.logger import get_logger
 
 log = get_logger("instagram")
 
 SAVE_EVERY = 300
+COOLDOWN = 300  # seconds without Instagram calls after a throttle or feedback_required
 
 
 class InstagramClient:
@@ -20,6 +21,7 @@ class InstagramClient:
         self.on_alert = None
         self._lock = asyncio.Lock()
         self._last_save = time.monotonic()
+        self._cooldown_until = 0.0
 
     @property
     def cl(self):
@@ -29,9 +31,22 @@ class InstagramClient:
     def username(self) -> str:
         return self.cfg.ig_username or getattr(self.cl, "username", "") or ""
 
-    async def _call(self, fn, *args):
+    async def _call(self, fn, *args, raw: bool = False):
+        # raw=True is for login/session housekeeping: it ignores and never starts a cooldown.
+        if not raw:
+            left = self._cooldown_until - time.monotonic()
+            if left > 0:
+                raise CooldownError(
+                    f"Instagram asked us to slow down. Resting this account for about {int(left // 60) + 1} min, try again then."
+                )
         async with self._lock:
-            result = await asyncio.to_thread(fn, *args)
+            try:
+                result = await asyncio.to_thread(fn, *args)
+            except Exception as e:
+                if not raw and describe_error(e, self.cl).kind in ("throttle", "feedback"):
+                    self._cooldown_until = time.monotonic() + COOLDOWN
+                    log.warning("Cooling down for %ss after %s", COOLDOWN, type(e).__name__)
+                raise
         await self._maybe_save()
         return result
 
@@ -54,7 +69,7 @@ class InstagramClient:
         self.auth.cfg = self.cfg
 
     async def _save_session(self, force: bool = False) -> None:
-        settings = await self._call(self.cl.get_settings)
+        settings = await self._call(self.cl.get_settings, raw=True)
         await self.auth.save_session(settings, force=force)
 
     def _bind(self) -> None:
@@ -65,7 +80,7 @@ class InstagramClient:
         await self.auth.forget_session()
         self._set_cfg(ig_username=username, ig_password=password, ig_totp_secret=totp_secret, ig_sessionid=None)
         try:
-            await self._call(self.auth.login_sync, None)
+            await self._call(self.auth.login_sync, None, raw=True)
         except Exception as e:
             self.logged_in = False
             info = describe_error(e, self.cl)
@@ -76,6 +91,7 @@ class InstagramClient:
             self._set_cfg(ig_password=None)
         self.logged_in = True
         self.last_alert = ""
+        self._cooldown_until = 0.0
         await self._save_session(force=True)
         return True, f"Connected as @{self.username} ({self.auth.login_method})."
 
@@ -87,7 +103,7 @@ class InstagramClient:
             return False, str(e)
         self._set_cfg(ig_username="", ig_password=None)
         try:
-            await self._call(self.auth.cookie_login_sync, sessionid, False, None)
+            await self._call(self.auth.cookie_login_sync, sessionid, False, None, raw=True)
         except CookieError as e:
             return False, str(e)
         except Exception as e:
@@ -120,7 +136,7 @@ class InstagramClient:
             self.auth.login_method = "session"
 
         try:
-            await self._call(_validate)
+            await self._call(_validate, raw=True)
         except Exception as e:
             self.logged_in = False
             log.info("Saved session is no longer valid (%s)", type(e).__name__)

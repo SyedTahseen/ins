@@ -32,7 +32,7 @@ _RESERVED = {
 }
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 _TRAILING_PUNCTUATION = ".,!?;:)]}>"
-_LINK_RE = re.compile(r"https?://(?:www\.)?(?:instagram\.com|instagr\.am)/\S+", re.I)
+_LINK_RE = re.compile(r"https?://(?:www\.|m\.)?(?:instagram\.com|instagr\.am)/\S+", re.I)
 
 
 def normalize_instagram_url(raw: str) -> str | None:
@@ -71,6 +71,18 @@ def classify_instagram_url(raw: str) -> tuple[str, str] | None:
         return "story", url
     if first == "s" and len(parts) >= 2:
         return "highlight", url
+    if first == "share" and len(parts) >= 3:
+        kind = parts[1].lower()
+        if kind in ("reel", "reels"):
+            return "reel", url
+        if kind in ("p", "tv"):
+            return "post", url
+    if len(parts) >= 3 and first not in _RESERVED and _USERNAME_RE.fullmatch(parts[0]):
+        kind = parts[1].lower()
+        if kind in ("reel", "reels"):
+            return "reel", url
+        if kind in ("p", "tv"):
+            return "post", url
     if len(parts) == 1 and _USERNAME_RE.fullmatch(parts[0]) and first not in _RESERVED:
         return "profile", url
     return None

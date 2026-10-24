@@ -52,6 +52,10 @@ class CookieError(Exception):
     pass
 
 
+class CooldownError(RuntimeError):
+    """Raised instead of calling Instagram while an account is cooling down after a throttle."""
+
+
 def parse_cookie_input(raw: str) -> str:
     text = (raw or "").strip().strip("`'\"")
     value = None
@@ -152,6 +156,8 @@ class ErrorInfo:
 
 def describe_error(e: Exception, cl=None) -> ErrorInfo:
     detail = str(e)[:300]
+    if isinstance(e, CooldownError):
+        return ErrorInfo("throttle", str(e), False)
     if isinstance(e, ReloginAttemptExceeded):
         return ErrorInfo("password", "Too many login attempts. Open the Instagram app, make sure the account is fine, then reconnect with /connect.", True)
     if isinstance(e, ClientNeedsUpgradeError) or _needs_app_migration(e):
@@ -280,6 +286,7 @@ class AuthManager:
             proxy=cfg.ig_proxy,
             delay_range=cfg.ig_delay_range,
             tls_verify=cfg.ig_tls_verify,
+            with_challenge_flow=False,
         )
         self._custom_profile = False
         self._app_overridden = False
@@ -358,8 +365,15 @@ class AuthManager:
             return True
         if isinstance(e, ChallengeRequired):
             api_path = json_value(client.last_json, "challenge", "api_path")
-            if api_path == "/challenge/":
-                log.warning("Generic challenge flow needs manual handling")
+            challenge = (client.last_json or {}).get("challenge") or {}
+            manual = (
+                api_path == "/challenge/"
+                or "auth_platform" in str(api_path or "")
+                or challenge.get("native_flow") is True
+                or bool(challenge.get("bloks_action"))
+            )
+            if manual:
+                log.warning("Challenge needs manual handling in the Instagram app (%s)", api_path)
                 raise e
             client.challenge_resolve(client.last_json)
             return True

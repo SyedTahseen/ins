@@ -27,6 +27,11 @@ def _int_or_none(name: str) -> int | None:
         return None
 
 
+def _positive_or_none(name: str) -> int | None:
+    value = _int_or_none(name)
+    return value if value and value > 0 else None
+
+
 def _int(name: str, default: int) -> int:
     value = _int_or_none(name)
     return default if value is None else value
@@ -106,7 +111,7 @@ def load_config() -> Config:
         ig_legacy_login=_bool("IG_LEGACY_LOGIN", False),
         ig_delay_range=tuple(_delay_range("IG_DELAY_RANGE", "1,3")),
         ig_tls_verify=_tls_verify("IG_TLS_VERIFY"),
-        ig_read_timeout=max(1, _int_or_none("IG_READ_TIMEOUT") or 0) or None,
+        ig_read_timeout=_positive_or_none("IG_READ_TIMEOUT"),
         max_media_mb=max(1, min(50, _int("MAX_MEDIA_MB", 50))),
         code_timeout=max(60, _int("CODE_TIMEOUT", 300)),
         max_watch=max(1, _int("MAX_WATCH", 10)),
