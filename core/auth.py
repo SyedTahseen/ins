@@ -176,7 +176,7 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
         return ErrorInfo("challenge", "Instagram wants a selfie/captcha. Complete it in the official Instagram app, then reconnect with /connect.", True)
     if isinstance(e, AccountSuspended):
         return ErrorInfo("account", "Instagram says this account is suspended. Check it in the Instagram app.", True)
-    if _has_name(e, {"CheckpointRequired", "ConsentRequired"}):
+    if _has_name(e, {"CheckpointRequired", "ConsentRequired", "ChallengeRedirection", "TermsUnblock", "TermsAccept", "AboutUsError", "GeoBlockRequired"}):
         return ErrorInfo("challenge", f"Instagram wants a security check or consent. Finish it in the Instagram app, then reconnect with /connect. ({type(e).__name__})", True)
     if isinstance(e, (RecaptchaChallengeForm, SelectContactPointRecoveryForm, ChallengeUnknownStep, SubmitPhoneNumberForm, LegacyForceSetNewPasswordForm)):
         return ErrorInfo("challenge", f"Instagram started a security check that can't be automated. Finish it in the Instagram app, then reconnect with /connect. ({type(e).__name__})", True)
@@ -213,7 +213,7 @@ def describe_error(e: Exception, cl=None) -> ErrorInfo:
 
 _NOT_FOUND_NAMES = {
     "ClientGraphqlError", "ClientNotFoundError", "MediaNotFound", "MediaUnavailable", "InvalidMediaId",
-    "UserNotFound", "StoryNotFound", "HighlightNotFound",
+    "UserNotFound", "StoryNotFound", "HighlightNotFound", "NotFoundError",
 }
 
 
