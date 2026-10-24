@@ -6,9 +6,10 @@ A Telegram bot for Instagram. Every user connects their own Instagram account in
 - `/posts`, `/reels`, `/stories` and highlights use the same caption as pasted links. `/posts` and `/reels` read everything unless you add a count (up to 500). Fewer than 10 items are sent normally; 10 or more ask whether to send one by one or as a ZIP (split into parts if over the 50 MB Telegram limit)
 - send a username (`x.tahseen`, `@x.tahseen` or an `instagram.com/x.tahseen` link) to open a public profile: posts, reels, stories, highlights, profile picture, JSON, followers and following exports
 - watch public accounts from the Watchlist (`/watchlist`): new posts, stories, highlights, profile changes, edits and milestones are sent to the chat
+- find accounts by name with `/search <name>` and tap a result to open it
 - check `/status`, change `/settings`, and delete everything with `/logout`
 
-Commands: `/start` `/help` `/status` `/watchlist` `/settings` `/connect` `/logout` `/cancel` `/profile` `/pfp` `/posts` `/reels` `/stories` `/highlights` `/followers` `/following`. `/help` lists them with usage.
+Commands: `/start` `/help` `/status` `/watchlist` `/settings` `/connect` `/logout` `/cancel` `/search` `/profile` `/pfp` `/posts` `/reels` `/stories` `/highlights` `/followers` `/following`. `/help` lists them with usage.
 
 There is no bridge, web dashboard or realtime connection. The bot only talks to Instagram when you ask it to, or when the watcher checks.
 

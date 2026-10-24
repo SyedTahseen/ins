@@ -217,7 +217,7 @@ class FetchIGBot:
             await self.connect_step(sess, update, text)
             return
         if not await sess.modules.handle_text(text, update):
-            await self._reply(message, "Send an Instagram link or a username, or open /help.")
+            await self._reply(message, "Send an Instagram link or a username, use /search <name> to find an account, or open /help.")
 
     @staticmethod
     def home_view() -> tuple[str, InlineKeyboardMarkup]:

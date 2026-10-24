@@ -5,6 +5,7 @@ import random
 import re
 import tempfile
 import time
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -83,6 +84,7 @@ class DumpModule(BaseModule):
 
     def get_commands(self):
         return {
+            "search": Command(self.cmd_search, "Find accounts by name", "/search <name>", takes_update=True),
             "profile": Command(self.cmd_profile, "Public profile info", "/profile <username or link>", takes_update=True),
             "pfp": Command(self.cmd_pfp, "Profile picture (full size)", "/pfp <username>", takes_update=True),
             "posts": Command(self.cmd_posts, f"All posts, or the latest N (up to {POSTS_MAX})", "/posts <username> [count]", takes_update=True),
@@ -603,6 +605,32 @@ class DumpModule(BaseModule):
         await message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         return True
 
+    SEARCH_MAX = 8
+
+    async def cmd_search(self, args, update):
+        message = update.effective_message
+        query = " ".join(args).strip()
+        if len(query) < 2 or len(query) > 60:
+            await message.reply_text(bad("Usage: /search <name>\nSend at least 2 characters, for example /search nasa official."))
+            return
+        try:
+            found = await self._ig(lambda: self.ctx.ig.cl.search_users(query))
+        except Exception as e:
+            await message.reply_text(bad(self._explain(e)))
+            return
+        users = [u for u in (found or []) if getattr(u, "username", None)][: self.SEARCH_MAX]
+        if not users:
+            await message.reply_text(bad(f"No accounts found for “{query}”. Try another spelling."))
+            return
+        lines, rows = [], []
+        for i, u in enumerate(users, 1):
+            badges = ("✅" if u.is_verified else "") + ("🔒" if u.is_private else "")
+            name = f" · {_esc(_clip(u.full_name, 40))}" if u.full_name else ""
+            lines.append(f"{i}. @{_esc(u.username)}{name} {badges}".rstrip())
+            rows.append([_btn(f"@{u.username}", "op", u.username)])
+        text = screen(f"Results for “{_esc(query)}”", "\n".join(lines) + "\n\nTap an account to open it.")
+        await message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows), disable_web_page_preview=True)
+
     async def cmd_profile(self, args, update):
         username = await self._target(args, update, "/profile <username or link>")
         if username:
@@ -680,6 +708,11 @@ class DumpModule(BaseModule):
 
         username = arg
         if not USERNAME_RE.match(username):
+            return
+
+        if act == "op":
+            shim = SimpleNamespace(effective_message=query.message)
+            await self._card_message(shim, username.lower(), detailed=True, with_menu=True)
             return
 
         if act == "ft":
